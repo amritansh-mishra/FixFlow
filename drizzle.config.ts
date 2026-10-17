@@ -7,7 +7,8 @@ export default defineConfig({
   dialect: "postgresql",
   schema: "./src/db/schema.ts",
   out: "./drizzle",
-  dbCredentials: { url: process.env.DATABASE_URL! },
+  // Schema tools (check, studio) connect as the table owner, not the restricted app user.
+  dbCredentials: { url: (process.env.DATABASE_ADMIN_URL || process.env.DATABASE_URL)! },
   schemaFilter: ["public"],
   strict: true,
   verbose: true,

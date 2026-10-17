@@ -3,13 +3,12 @@
 import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
-import { pool } from "../src/db/index.js";
-import { createOrg, createTicket, resetDatabase, type Org } from "./helpers.js";
+import { closeDatabases, createOrg, createTicket, resetDatabase, type Org } from "./helpers.js";
 
 const app = createApp();
 
 beforeEach(resetDatabase);
-afterAll(() => pool.end());
+afterAll(closeDatabases);
 
 type AsUser = { token: string };
 const get = (path: string, asUser: AsUser) => request(app).get(path).auth(asUser.token, { type: "bearer" });

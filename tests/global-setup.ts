@@ -8,7 +8,7 @@ import pg from "pg";
 import { TEST_DB_NAME, testDatabaseUrl } from "./test-db.js";
 
 export default async function setup() {
-  const admin = new pg.Client({ connectionString: testDatabaseUrl("postgres") });
+  const admin = new pg.Client({ connectionString: testDatabaseUrl("admin", "postgres") });
   await admin.connect();
   try {
     // TEST_DB_NAME is a constant, never user input, so building SQL with it is safe.
@@ -18,7 +18,7 @@ export default async function setup() {
     await admin.end();
   }
 
-  const pool = new pg.Pool({ connectionString: testDatabaseUrl() });
+  const pool = new pg.Pool({ connectionString: testDatabaseUrl("admin") });
   try {
     await migrate(drizzle(pool), {
       migrationsFolder: path.resolve(import.meta.dirname, "../drizzle"),

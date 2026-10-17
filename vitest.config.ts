@@ -5,10 +5,10 @@ export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
     globalSetup: ["./tests/global-setup.ts"],
-    // Point the app at the test database instead of the real one.
+    // Point the app at the test database (as the restricted app role) instead of the real one.
     env: {
       NODE_ENV: "test",
-      DATABASE_URL: testDatabaseUrl(),
+      DATABASE_URL: testDatabaseUrl("app"),
     },
     // Test files share one database, so run them one at a time.
     fileParallelism: false,

@@ -29,7 +29,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 23. [Assignment, status workflow, history and race conditions](#23-assignment-status-workflow-history-and-race-conditions)
 24. [Real authentication: passwords, login and sessions](#24-real-authentication-passwords-login-and-sessions)
 25. [Login rate limiting and ticket visibility](#25-login-rate-limiting-and-ticket-visibility)
-26. [Glossary](#glossary)
+26. [A least-privilege database user](#26-a-least-privilege-database-user)
+27. [Glossary](#glossary)
 
 ---
 
@@ -1735,6 +1736,101 @@ This changed two existing tests, for the better:
 
 ---
 
+## 26. A least-privilege database user
+
+> **Status:** done. The app connects as `fixflow_app`, and all 15 permission tests pass. (The manual set-up step was briefly postponed; while it was, the tests were reported as skipped. See the end of this chapter.)
+
+### The problem
+
+The app connects to PostgreSQL as **`postgres`**, a **superuser**. A superuser can do *anything*: drop every table, read every database on the server, create new users, even run programs on the server machine.
+
+The app needs none of that. It only reads and writes a few kinds of rows. But if an attacker ever found a hole in the app (say, an SQL injection bug), they would inherit **everything** the app's database user can do.
+
+### The principle: least privilege
+
+> Give each part of a system **only the permissions it actually needs**, and nothing more.
+
+**Analogy:** a hotel cleaner gets a key card that opens guest rooms on their floor, not the safe, the manager's office, or the other hotels in the chain. If the card is stolen, the damage is limited.
+
+### Two database users, two jobs
+
+| User | Used by | Can |
+|---|---|---|
+| `postgres` (owner) | migrations, schema tools, test setup | everything: create and alter tables |
+| **`fixflow_app`** | the running app | only the exact reads and writes the app does |
+
+They get two connection URLs: `DATABASE_ADMIN_URL` (owner) and `DATABASE_URL` (app).
+
+### What `fixflow_app` may do
+
+Migration `0004_app_role_grants.sql`:
+
+```sql
+GRANT SELECT ON organizations, properties TO fixflow_app;
+GRANT SELECT ON users TO fixflow_app;
+GRANT UPDATE (password_hash) ON users TO fixflow_app;       -- only this column!
+GRANT SELECT, INSERT ON tickets TO fixflow_app;
+GRANT UPDATE (status, assigned_to) ON tickets TO fixflow_app;
+GRANT SELECT, INSERT ON ticket_events TO fixflow_app;       -- no UPDATE, no DELETE
+GRANT SELECT, INSERT, DELETE ON sessions TO fixflow_app;
+```
+
+- **`GRANT`** gives a permission, and **`REVOKE`** takes it away.
+- **Column-level grants:** `UPDATE (password_hash) ON users` means the app can change passwords but **can't** change anyone's `role`. Even with an SQL injection bug, an attacker couldn't promote themselves to admin.
+- **History is truly append-only now.** Chapter 23 said `ticket_events` is "only ever added to", but that was just a promise in our code. Now **the database enforces it**: `UPDATE ticket_events` is refused. Another layer of defense in depth.
+- **No default privileges.** New tables give the app **no access** until a migration grants it. If someone forgets, the app fails loudly with "permission denied" in the tests, rather than quietly having too much access. *Fail safe, not fail open.*
+
+### Why the password isn't in the migration
+
+The migration creates the role **without a password, with login disabled** (`NOLOGIN`). Migration files go to GitHub, and **passwords never belong in Git**. Since every connection requires a password (`scram-sha-256` in `pg_hba.conf`, checked first), a role without one simply can't log in.
+
+The password is set by hand with **`\password fixflow_app`** in `psql`. psql **hashes it on your machine** before sending it, so the plain password never reaches the server, its logs, or your shell history. That's safer than `ALTER ROLE … PASSWORD '…'`, which sends the password as plain text inside the SQL.
+
+### Generating a password for a URL
+
+```bash
+openssl rand -base64 24 | tr '+/' '-_' | tr -d '='
+```
+
+- `openssl rand -base64 24`: 24 random bytes, written as text.
+- `tr '+/' '-_'`: swaps `+` and `/` for `-` and `_`, because `/` has a special meaning inside a URL.
+- `tr -d '='`: removes padding `=` signs.
+
+A password with `@`, `:` or `/` would confuse the URL `postgresql://user:password@host/db` unless it was carefully escaped (**URL-encoded**).
+
+### How the tests change
+
+- The **app under test** connects as `fixflow_app`, exactly like the real app, so a missing grant shows up as a failing test.
+- **Test setup** (creating the test database, migrations, `TRUNCATE`, creating organizations and users) uses a separate **admin** connection, `adminDb` in `tests/helpers.ts`. Seeding test data is admin work, not something the app may do.
+- **`tests/db-permissions.test.ts`** checks the role from the app's side: it must be **refused** for 13 dangerous operations (drop, truncate, create or alter a table, read the migration log, create users, change roles, delete tickets, rewrite or delete history, extend a session), and **allowed** to do its normal work. "Refused" means PostgreSQL error code `42501` (insufficient privilege).
+
+**While set-up is pending,** these tests are **skipped** (`describe.skipIf(...)`), and Vitest reports them as skipped: `137 passed | 15 skipped`. Skipped is honest; silently passing would hide that they've never run.
+
+### Small things worth knowing
+
+- **Verifying permissions:** PostgreSQL lists them in `information_schema.role_table_grants` and `information_schema.column_privileges`.
+- **In SQL, double quotes mean names and single quotes mean text.** `", "` in a query means "the column named `, `", which caused a confusing *column does not exist* error while checking the grants. Use `', '`, or better, pass it as a parameter.
+- **Transition fallbacks:** if `DATABASE_ADMIN_URL` is missing, migrations and tests use `DATABASE_URL` and print a note. That's convenient while set-up is pending, but fallbacks can hide mistakes, so it's documented and visible rather than silent.
+
+### Finishing the set-up, and testing the tests
+
+After the password was set and `.env` switched, a quick check (printing only **usernames**, never passwords) confirmed `DATABASE_URL` connects as `fixflow_app` (not a superuser) and `DATABASE_ADMIN_URL` as `postgres`.
+
+**First run:** all 15 permission tests passed. Then, to make sure they can fail, the migration was temporarily changed (affecting only the throwaway test database):
+
+| Deliberate mistake | Result |
+|---|---|
+| History made editable (`GRANT UPDATE, DELETE ON ticket_events`) | "can't rewrite history", "can't delete history" failed |
+| `UPDATE` on **every** column of `users` | "can't change a user's role" failed |
+| App allowed to create organizations | "can't create an organization" failed |
+| A grant **missing** (app can't add history rows) | **15 workflow tests** failed |
+
+So the tests catch permissions that are too **loose** *and* too **tight**.
+
+**Gotcha while connecting:** `psql -U postgres` asked for a password and rejected the one typed. Instead of retyping, psql read the URL straight from `.env`: `psql "$(grep … .env | cut -d= -f2-)"`. Shell history records the command, not the password.
+
+---
+
 ## Glossary
 
 | Term | Simple meaning |
@@ -1816,3 +1912,11 @@ This changed two existing tests, for the better:
 | **Dependency injection** | Passing in the things code depends on (like a clock) so tests can replace them |
 | **Visibility scope** | Which records a user is allowed to see, e.g. "tickets I created" |
 | **Trust proxy** | An Express setting that tells it to read the real client IP from headers added by a reverse proxy |
+| **Least privilege** | Giving each part of a system only the permissions it needs, nothing more |
+| **Superuser** (PostgreSQL) | A database role that bypasses all permission checks |
+| **Role** (PostgreSQL) | A database user or group that permissions are granted to |
+| **GRANT / REVOKE** | SQL commands that give or take away permissions |
+| **Column-level privilege** | A permission on specific columns only, e.g. `UPDATE (password_hash) ON users` |
+| **Fail safe** | When something is forgotten, the system denies access rather than allowing it |
+| **URL encoding** | Escaping special characters (like `@` or `/`) so they can appear inside a URL |
+| **Skipped test** | A test deliberately not run, and reported as such, e.g. because a precondition isn't met |

@@ -76,6 +76,22 @@ Any other change returns `409 INVALID_TRANSITION`, and a permitted change by the
 
 Errors always look like `{ "error": { "code", "message", "details"? } }`. Validation errors list each problem in `details` as `{ path, message }`.
 
+### Database users
+
+The app should connect as `fixflow_app`, a restricted role created by migration `0004`. It can only read and change the rows the app needs; it can't alter tables or rewrite ticket history. Migrations and test setup connect as the table owner through `DATABASE_ADMIN_URL`.
+
+The role starts with no password and login disabled. One-time setup:
+
+```bash
+openssl rand -base64 24 | tr '+/' '-_' | tr -d '='   # generate a URL-safe password
+psql -h localhost -U postgres -d flixflow
+#   \password fixflow_app          (hidden prompt; hashed before it's sent)
+#   ALTER ROLE fixflow_app LOGIN;
+#   \q
+```
+
+Then in `.env`, rename the current `DATABASE_URL` to `DATABASE_ADMIN_URL` and set `DATABASE_URL=postgresql://fixflow_app:<password>@localhost:5432/flixflow`. If `DATABASE_ADMIN_URL` is missing, migrations and tests fall back to `DATABASE_URL`, and the permission tests are skipped.
+
 ### Database schema and migrations
 
 The schema is defined in TypeScript in `src/db/schema.ts` using [Drizzle ORM](https://orm.drizzle.team). Migrations are SQL files in `drizzle/`, managed by Drizzle Kit.

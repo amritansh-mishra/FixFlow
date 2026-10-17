@@ -5,13 +5,13 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { db, pool } from "../src/db/index.js";
 import { ticketEvents } from "../src/db/schema.js";
-import { createOrg, createTicket, resetDatabase } from "./helpers.js";
+import { closeDatabases, createOrg, createTicket, resetDatabase } from "./helpers.js";
 
 const app = createApp();
 const NONEXISTENT_ID = "00000000-0000-0000-0000-000000000000";
 
 beforeEach(resetDatabase);
-afterAll(() => pool.end());
+afterAll(closeDatabases);
 
 type AsUser = { token: string };
 

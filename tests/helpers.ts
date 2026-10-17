@@ -1,29 +1,37 @@
 import { sql } from "drizzle-orm";
-import { db } from "../src/db/index.js";
-import {
-  organizations,
-  properties,
-  tickets,
-  users,
-  type NewTicket,
-  type UserRole,
-} from "../src/db/schema.js";
+import { drizzle } from "drizzle-orm/node-postgres";
+import pg from "pg";
+import { pool } from "../src/db/index.js";
+import * as schema from "../src/db/schema.js";
+import { organizations, properties, tickets, users, type NewTicket, type UserRole } from "../src/db/schema.js";
 import { createSession } from "../src/modules/auth/auth.service.js";
-import { TEST_DB_NAME } from "./test-db.js";
+import { TEST_DB_NAME, testDatabaseUrl } from "./test-db.js";
+
+// The app under test connects as the restricted fixflow_app role, so it can't
+// create organizations, wipe tables, and so on. Test setup does those things
+// through this separate owner connection instead.
+const adminPool = new pg.Pool({ connectionString: testDatabaseUrl("admin") });
+export const adminDb = drizzle(adminPool, { schema });
+
+// Use in afterAll: closes both connection pools.
+export async function closeDatabases() {
+  await pool.end();
+  await adminPool.end();
+}
 
 // Empty every table between tests so each test starts clean.
 export async function resetDatabase() {
   // Safety net: refuse to wipe anything except the test database.
-  const { rows } = await db.execute<{ name: string }>(sql`SELECT current_database() AS name`);
+  const { rows } = await adminDb.execute<{ name: string }>(sql`SELECT current_database() AS name`);
   if (rows[0]?.name !== TEST_DB_NAME) {
     throw new Error(`Refusing to reset database "${rows[0]?.name}"`);
   }
-  await db.execute(sql`TRUNCATE sessions, ticket_events, tickets, properties, users, organizations CASCADE`);
+  await adminDb.execute(sql`TRUNCATE sessions, ticket_events, tickets, properties, users, organizations CASCADE`);
 }
 
 // Creates a user and logs them in, so tests can send `.auth(user.token, { type: "bearer" })`.
 async function createUser(organizationId: string, slug: string, name: string, role: UserRole) {
-  const [user] = await db
+  const [user] = await adminDb
     .insert(users)
     .values({ organizationId, name, email: `${name}@${slug}.test`, role })
     .returning();
@@ -33,9 +41,9 @@ async function createUser(organizationId: string, slug: string, name: string, ro
 
 // Creates an organization with one property and a user for every role.
 export async function createOrg(slug: string) {
-  const [org] = await db.insert(organizations).values({ name: `Org ${slug}`, slug }).returning();
+  const [org] = await adminDb.insert(organizations).values({ name: `Org ${slug}`, slug }).returning();
   const id = org!.id;
-  const [property] = await db
+  const [property] = await adminDb
     .insert(properties)
     .values({ organizationId: id, name: `${slug} Block A` })
     .returning();
@@ -55,7 +63,7 @@ export type Org = Awaited<ReturnType<typeof createOrg>>;
 
 // Inserts a ticket directly (skipping the API), created by the org's resident.
 export async function createTicket(org: Org, overrides: Partial<NewTicket> = {}) {
-  const [ticket] = await db
+  const [ticket] = await adminDb
     .insert(tickets)
     .values({
       organizationId: org.org.id,

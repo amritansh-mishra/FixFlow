@@ -3,12 +3,12 @@ import { eq, sql } from "drizzle-orm";
 import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
-import { db, pool } from "../src/db/index.js";
+import { db } from "../src/db/index.js";
 import { sessions, users } from "../src/db/schema.js";
 import { hashPassword, verifyPassword } from "../src/lib/passwords.js";
 import { resetLoginLimits } from "../src/modules/auth/auth.rate-limits.js";
 import { setUserPassword } from "../src/modules/auth/auth.service.js";
-import { createOrg, resetDatabase, type Org } from "./helpers.js";
+import { adminDb, closeDatabases, createOrg, resetDatabase, type Org } from "./helpers.js";
 
 const app = createApp();
 const PASSWORD = "correct horse battery staple";
@@ -17,7 +17,7 @@ beforeEach(async () => {
   await resetDatabase();
   resetLoginLimits();
 });
-afterAll(() => pool.end());
+afterAll(closeDatabases);
 
 // Gives the org's resident a password so they can log in.
 async function withPassword(org: Org) {
@@ -151,7 +151,7 @@ describe("protected routes", () => {
 
   it("reject an expired session", async () => {
     const a = await createOrg("a");
-    await db.update(sessions).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(sessions.userId, a.resident.id));
+    await adminDb.update(sessions).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(sessions.userId, a.resident.id));
 
     const res = await request(app).get("/api/tickets").auth(a.resident.token, { type: "bearer" });
 
