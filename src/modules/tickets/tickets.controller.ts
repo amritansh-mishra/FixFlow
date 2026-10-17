@@ -24,13 +24,13 @@ import {
   listTickets,
 } from "./tickets.service.js";
 
-// GET /api/tickets?status=open&limit=20
+// GET /api/tickets?status=&priority=&propertyId=&q=&limit=&cursor=
 export const listTicketsHandler: RequestHandler = async (req, res) => {
   const auth = getAuth(req);
   const query = validate(listTicketsQuery, req.query, "query parameters");
 
-  const rows = await listTickets(auth, query);
-  res.status(200).json({ data: rows });
+  const { tickets, nextCursor } = await listTickets(auth, query);
+  res.status(200).json({ data: tickets, nextCursor });
 };
 
 // GET /api/tickets/:id

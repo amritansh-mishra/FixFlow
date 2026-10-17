@@ -4,12 +4,20 @@
 import { z } from "zod";
 import { TICKET_PRIORITIES, TICKET_STATUSES } from "../../db/schema.js";
 
-// GET /api/tickets?status=open&limit=20
+// GET /api/tickets?status=open&priority=high&q=leak&limit=20&cursor=<id>
 export const listTicketsQuery = z.object({
   status: z.enum(TICKET_STATUSES).optional(),
+  priority: z.enum(TICKET_PRIORITIES).optional(),
+  propertyId: z.uuid().optional(),
+  // Text search in title and description.
+  q: z.string().trim().min(1).max(100).optional(),
   // Query values arrive as strings; coerce turns "20" into 20.
   limit: z.coerce.number().int().min(1).max(50).default(20),
+  // The `nextCursor` from the previous page.
+  cursor: z.uuid().optional(),
 });
+
+export type ListTicketsQuery = z.infer<typeof listTicketsQuery>;
 
 // /api/tickets/:id
 export const ticketIdParams = z.object({

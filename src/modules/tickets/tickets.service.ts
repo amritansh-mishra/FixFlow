@@ -1,7 +1,7 @@
 // Business logic and database access for tickets. Knows nothing about HTTP
 // requests, but throws HttpError for rule violations the caller should see.
 
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, isNull, or, sql, type SQL } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import {
   properties,
@@ -15,12 +15,7 @@ import {
 import type { AuthContext } from "../../middleware/auth.js";
 import { HttpError } from "../../middleware/errors.js";
 import { canAssign, findTransition, isAssignable, ticketScope } from "./tickets.policy.js";
-import type { CreateTicketBody } from "./tickets.schemas.js";
-
-export interface ListTicketsOptions {
-  status?: TicketStatus | undefined;
-  limit: number;
-}
+import type { CreateTicketBody, ListTicketsQuery } from "./tickets.schemas.js";
 
 // SQL condition for "tickets this user may see": their organization, narrowed
 // by role (see ticketScope in tickets.policy.ts). Every ticket query uses it.
@@ -33,20 +28,53 @@ function visibleTo(auth: AuthContext) {
   );
 }
 
-export async function listTickets(auth: AuthContext, options: ListTicketsOptions) {
-  return db
+// Makes user text safe inside LIKE: % and _ are wildcards, \ escapes them.
+function likePattern(text: string): string {
+  return `%${text.replace(/[\\%_]/g, "\\$&")}%`;
+}
+
+// Newest first, one page at a time. Each page ends with `nextCursor` (the id
+// of its last ticket); passing it back returns the tickets that come after.
+export async function listTickets(auth: AuthContext, options: ListTicketsQuery) {
+  let afterCursor: SQL | undefined;
+  if (options.cursor) {
+    // The cursor must be a ticket this user can see, so it reveals nothing.
+    if (!(await getTicket(auth, options.cursor))) {
+      throw new HttpError(400, "VALIDATION_ERROR", "Invalid query parameters", [
+        { path: "cursor", message: "Unknown cursor" },
+      ]);
+    }
+    // Compare against the cursor ticket's stored values inside the database.
+    // Passing its timestamp through JavaScript would lose precision (JS Dates
+    // have milliseconds, PostgreSQL has microseconds) and skip or repeat rows.
+    afterCursor = sql`(${tickets.createdAt}, ${tickets.id}) <
+      (SELECT created_at, id FROM tickets WHERE id = ${options.cursor})`;
+  }
+
+  const rows = await db
     .select()
     .from(tickets)
     .where(
       and(
         visibleTo(auth),
-        // and() skips undefined, so the status filter is optional.
+        // and() skips undefined, so every filter is optional.
         options.status ? eq(tickets.status, options.status) : undefined,
+        options.priority ? eq(tickets.priority, options.priority) : undefined,
+        options.propertyId ? eq(tickets.propertyId, options.propertyId) : undefined,
+        options.q
+          ? or(ilike(tickets.title, likePattern(options.q)), ilike(tickets.description, likePattern(options.q)))
+          : undefined,
+        afterCursor,
       ),
     )
     // id breaks ties so the order is stable when two tickets share a timestamp.
     .orderBy(desc(tickets.createdAt), desc(tickets.id))
-    .limit(options.limit);
+    // One extra row tells us whether another page exists.
+    .limit(options.limit + 1);
+
+  const page = rows.slice(0, options.limit);
+  const nextCursor = rows.length > options.limit ? page[page.length - 1]!.id : null;
+  return { tickets: page, nextCursor };
 }
 
 // Returns null when the ticket doesn't exist OR the user may not see it

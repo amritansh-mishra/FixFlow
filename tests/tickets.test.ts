@@ -20,7 +20,7 @@ describe("GET /api/tickets", () => {
     const res = await request(app).get("/api/tickets").auth(a.resident.token, { type: "bearer" });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ data: [] });
+    expect(res.body).toEqual({ data: [], nextCursor: null });
   });
 
   it("only returns tickets from the caller's organization", async () => {

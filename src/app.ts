@@ -4,6 +4,7 @@ import { pool } from "./db/index.js";
 import { errorHandler, notFoundHandler } from "./middleware/errors.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
 import { propertiesRouter } from "./modules/properties/properties.routes.js";
+import { statsRouter } from "./modules/stats/stats.routes.js";
 import { ticketsRouter } from "./modules/tickets/tickets.routes.js";
 
 // Builds the Express app without starting a listener, so tests can import it.
@@ -29,10 +30,13 @@ export function createApp() {
         "POST /api/auth/logout",
         "GET  /api/auth/me",
         "GET  /api/properties",
+        "GET  /api/stats",
         "GET  /api/tickets",
         "POST /api/tickets",
         "GET  /api/tickets/:id",
         "GET  /api/tickets/:id/history",
+        "GET  /api/tickets/:id/comments",
+        "POST /api/tickets/:id/comments",
         "PATCH /api/tickets/:id/assign",
         "PATCH /api/tickets/:id/status",
       ],
@@ -53,6 +57,7 @@ export function createApp() {
 
   app.use("/api/auth", authRouter);
   app.use("/api/properties", propertiesRouter);
+  app.use("/api/stats", statsRouter);
   app.use("/api/tickets", ticketsRouter);
 
   app.use(notFoundHandler);
