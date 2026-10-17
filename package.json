@@ -14,7 +14,9 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:studio": "drizzle-kit studio",
-    "user:set-password": "tsx src/scripts/set-password.ts"
+    "user:set-password": "tsx src/scripts/set-password.ts",
+    "start:prod": "node dist/db/migrate.js && node dist/scripts/seed-demo.js && node dist/server.js",
+    "db:seed-demo": "tsx src/scripts/seed-demo.ts"
   },
   "keywords": [],
   "author": "",

@@ -30,7 +30,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 24. [Real authentication: passwords, login and sessions](#24-real-authentication-passwords-login-and-sessions)
 25. [Login rate limiting and ticket visibility](#25-login-rate-limiting-and-ticket-visibility)
 26. [A least-privilege database user](#26-a-least-privilege-database-user)
-27. [Glossary](#glossary)
+27. [Deploying to Render](#27-deploying-to-render)
+28. [Glossary](#glossary)
 
 ---
 
@@ -1831,6 +1832,58 @@ So the tests catch permissions that are too **loose** *and* too **tight**.
 
 ---
 
+## 27. Deploying to Render
+
+**Goal:** a live URL for the resume, quickly. Docker, Redis, file uploads and notifications were postponed. The API was already complete enough to show.
+
+### What a deploy does
+
+`render.yaml` is a **Blueprint**: a file describing the infrastructure, which Render reads and creates for you. It's called **infrastructure as code**, because the setup lives in Git instead of being clicked together by hand.
+
+```
+git push → Render builds:   npm ci --include=dev && npm run build
+         → then starts:     npm run start:prod
+                              ├─ node dist/db/migrate.js      (apply new migrations)
+                              ├─ node dist/scripts/seed-demo.js (demo data, only once)
+                              └─ node dist/server.js          (the API)
+```
+
+- **`--include=dev`:** with `NODE_ENV=production`, npm skips dev dependencies, but TypeScript (a dev dependency) is needed to *build*.
+- **Migrations on start:** Render's free plan has no separate "pre-deploy" step, so they run just before the server. They're safe to repeat, because already-applied migrations are skipped.
+- **Health check:** Render calls `/health` and only sends traffic once it answers `200`.
+
+### Production fixes
+
+**1. Trust the proxy.** On Render, requests reach the app through Render's **proxy** (a middleman server). Without configuration, `req.ip` is the *proxy's* address, so **every user would share one IP**: 20 logins from anyone would block everyone. `app.set("trust proxy", 1)` tells Express to read the real client IP from the `X-Forwarded-For` header the proxy adds. This is only done in production, where the proxy really exists. Trusting that header without a proxy would let anyone fake their IP.
+
+**2. Hosts that don't allow creating roles.** Managed databases often don't let you create database users. Migration `0004` would have **crashed the deploy** on `CREATE ROLE`. It now catches that specific error (`insufficient_privilege`), prints a notice, and skips the grants. On Render, the app then connects as the database owner: less locked down than locally, but working.
+
+> **An exception to "never edit an applied migration":** `0004` had only ever run on the local development database, and the change doesn't alter what it does there (the role already existed, so the same grants apply). Drizzle doesn't re-check old migrations, so editing it was safe *this time*. Once a migration has run somewhere you don't control, like production, always add a new one instead.
+
+**3. Demo data.** A fresh production database is empty, and nobody could log in. `src/scripts/seed-demo.ts` creates a `demo` organization with 5 users (one per role), 2 properties and 5 tickets, one in each status, each with a realistic history. It's **idempotent** (safe to run any number of times): it does nothing unless `SEED_DEMO=true`, and nothing if the demo organization already exists. The demo password comes from the `DEMO_PASSWORD` environment variable, set in the Render dashboard. `sync: false` in `render.yaml` means "ask me for this value; never store it in the file".
+
+**4. `GET /api/properties`.** Creating a ticket needs a `propertyId`, but nothing listed properties. Without this endpoint, the deployed API couldn't be used to create tickets.
+
+**5. `GET /` describes the API.** Opening the URL in a browser now shows the name, the endpoints and a link to the docs, instead of a bare line of text.
+
+### Testing the deploy before deploying
+
+A local **simulation** of Render:
+1. A fresh database, owned by a user **without** permission to create roles, like a managed host.
+2. `NODE_ENV=production npm run start:prod`, which migrated, seeded and started the server.
+3. The full workflow over HTTP: log in as each role, check visibility, create, assign, start, resolve and close a ticket, then read its history.
+4. **Start again:** "Migrations up to date", "Demo organization already exists". Restarts are safe.
+
+**A gap in the simulation, and how it was closed:** the `fixflow_app` role already existed on this machine (from the real database), so the "can't create roles" path in `0004` *never ran* during the simulation. It was tested separately by running the migration under a user without that permission, with a role name that didn't exist: it printed the notice and skipped, as intended. **When a test passes, check that it actually exercised the path you care about.**
+
+### Free tier limits
+
+- **The web service sleeps** after ~15 minutes without traffic, and the next request takes ~1 minute to wake it. Worth mentioning next to the link on your resume.
+- **The free PostgreSQL database expires** after a limited time (check Render's current terms). For a long-lived demo, move the database to a free provider without expiry, or upgrade.
+- **In-memory rate limits reset** when the service sleeps or restarts (chapter 25's tradeoff).
+
+---
+
 ## Glossary
 
 | Term | Simple meaning |
@@ -1920,3 +1973,9 @@ So the tests catch permissions that are too **loose** *and* too **tight**.
 | **Fail safe** | When something is forgotten, the system denies access rather than allowing it |
 | **URL encoding** | Escaping special characters (like `@` or `/`) so they can appear inside a URL |
 | **Skipped test** | A test deliberately not run, and reported as such, e.g. because a precondition isn't met |
+| **Blueprint (Render)** | A `render.yaml` file describing the services and databases Render should create |
+| **Infrastructure as code** | Describing servers, databases and settings in files kept in Git, instead of setting them up by hand |
+| **Reverse proxy** | A server in front of the app that receives requests and forwards them (and adds headers like `X-Forwarded-For`) |
+| **Idempotent** | Safe to run more than once; repeating it changes nothing further |
+| **Seed data** | Initial data loaded into a database, e.g. demo accounts |
+| **Cold start** | The delay when a sleeping server has to start up before answering the first request |

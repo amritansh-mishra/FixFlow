@@ -1,7 +1,52 @@
 # FixFlow
-FixFlow replaces scattered WhatsApp messages, calls and spreadsheets with a structured maintenance workflow for apartment complexes, hostels, offices and college campuses. 
 
-Eg: Resident reports leaking tap, attaches a photo, tracks the repair. Manager assigns a plumber, plumber updates progress, and resident confirms that the problem is resolved.
+A multi-tenant REST API for maintenance and work-order management. FixFlow replaces scattered WhatsApp messages, calls and spreadsheets with a structured workflow for apartment complexes, hostels, offices and college campuses.
+
+A resident reports a leaking tap, a manager assigns a technician, the technician updates progress, and the resident confirms the fix. Every step is recorded.
+
+**Live API:** `https://<your-service>.onrender.com` (free tier: the first request after a while can take ~1 minute while the server wakes up)
+
+## Highlights
+
+- **Multi-tenant isolation:** every query is scoped to the user's organization. Composite foreign keys make cross-organization references impossible at the database level.
+- **Authentication:** scrypt password hashing, server-side sessions with hashed tokens, login rate limiting (per account and per IP), and generic errors with equal timing so attackers can't discover which accounts exist.
+- **Role-based access:** residents, technicians, managers and admins each see and do only what their role allows. Hidden tickets return `404`.
+- **Workflow as a state machine:** `open → assigned → in_progress → resolved → closed` (with reopen), with the rules in one policy module.
+- **Audit history:** an append-only event log for every ticket, written in the same transaction as each change.
+- **Concurrency-safe updates:** optimistic concurrency returns `409 CONFLICT` instead of losing a simultaneous change.
+- **Least-privilege database role:** the app's database user can't alter tables or rewrite history.
+- **155 automated tests** (Vitest + Supertest) against a real PostgreSQL database, including a deterministic race-condition test.
+
+**Tech stack:** TypeScript, Node.js 24, Express 5, PostgreSQL, Drizzle ORM, Zod, Vitest. Deployed on Render.
+
+## Try the demo
+
+The deployed API has a demo organization (`demo`). All demo accounts share the password set when deploying:
+
+| Email | Role |
+|---|---|
+| `manager@example.com` | manager: sees all tickets, assigns technicians |
+| `technician@example.com` | technician: sees assigned tickets, starts and resolves them |
+| `resident@example.com` | resident: reports tickets, closes resolved ones |
+| `admin@example.com` | admin |
+
+```bash
+API=https://<your-service>.onrender.com
+
+# 1. Log in (returns a token)
+curl -X POST $API/api/auth/login -H "Content-Type: application/json" \
+  -d '{"organization":"demo","email":"manager@example.com","password":"<demo-password>"}'
+
+# 2. Use the token
+curl $API/api/tickets -H "Authorization: Bearer <token>"
+```
+
+## Deploying to Render
+
+1. Push this repository to GitHub.
+2. In the Render dashboard: **New → Blueprint**, then pick the repository. `render.yaml` creates the web service and a PostgreSQL database.
+3. When asked, set `DEMO_PASSWORD` (at least 12 characters). It becomes the password of the demo accounts.
+4. Every deploy runs migrations, seeds the demo organization once, then starts the server (`npm run start:prod`).
 
 ## Local development
 
@@ -51,6 +96,7 @@ npm run user:set-password -- --org <organization-slug> --email <email>
 | `POST` | `/api/auth/login` | `{ organization, email, password }` → session token |
 | `POST` | `/api/auth/logout` | End the current session → 204 |
 | `GET` | `/api/auth/me` | The logged-in user |
+| `GET` | `/api/properties` | The organization's properties (needed to create tickets) |
 | `GET` | `/api/tickets?status=&limit=` | List the organization's tickets, newest first (`limit` 1–50, default 20) |
 | `GET` | `/api/tickets/:id` | One ticket (404 if it doesn't exist or belongs to another organization) |
 | `POST` | `/api/tickets` | Create a ticket: `{ propertyId, title, description?, priority? }` → 201 |
