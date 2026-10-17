@@ -33,7 +33,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 27. [Deploying to Render](#27-deploying-to-render)
 28. [Comments, search, pagination, stats, API docs and CI](#28-comments-search-pagination-stats-api-docs-and-ci)
 29. [The React frontend](#29-the-react-frontend)
-30. [Glossary](#glossary)
+30. [Signup, join codes and the Team page](#30-signup-join-codes-and-the-team-page)
+31. [Glossary](#glossary)
 
 ---
 
@@ -2036,6 +2037,63 @@ Trying the frontend raised a question: *why can a manager create tickets?* The A
 
 ---
 
+## 30. Signup, join codes and the Team page
+
+**The gap:** nobody could create an account. Users only existed if someone added them to the database by hand. A SaaS app needs ways in.
+
+### Three ways in
+
+| Who | How | Becomes |
+|---|---|---|
+| Someone setting up their building | **Create organization**: name, ID (slug), name, email, password | **admin** of a new organization |
+| A resident | **Join with code**: the code their manager shares | **resident** of that organization |
+| Staff (technicians, managers) | Added by a manager or admin on the **Team** page, with a temporary password | the chosen role |
+
+This is called **multi-tenant onboarding**: every organization is a separate tenant, and signup creates a new one.
+
+### Signup: everything or nothing
+
+`POST /api/auth/signup` creates the organization, a first property ("Main building"), a join code and the admin user **in one transaction**, then logs them in. A half-created organization (one with no admin) can't happen.
+
+**Slugs** (the organization ID used to sign in, like `sunrise-hostel`) must be unique. Two people signing up with the same slug **at the same moment** could both pass a "does it exist?" check, so the real guard is the database's `UNIQUE` constraint. When it rejects the second insert, `isUniqueViolation()` recognizes PostgreSQL error `23505` and turns it into a friendly **409 SLUG_TAKEN** instead of a 500. A test sends two signups at once: one gets 201, the other 409. This is the same idea as optimistic concurrency in chapter 23: **let the database be the referee.**
+
+### Join codes
+
+- Random 8-character codes like `K7QM-3XPA`, from an alphabet **without look-alike characters** (no `0/O`, `1/I/L`), so they're easy to read aloud.
+- Generated with `crypto.randomInt`, a **cryptographically secure** random source. `Math.random()` is predictable and must never be used for anything security-related.
+- 31⁸ ≈ 850 billion possible codes, and joining is rate-limited, so guessing isn't practical.
+- Only managers and admins can **see** the code. Anyone with it can join as a resident, so it's treated like a shared password.
+- **"New code"** replaces it, and the old one stops working immediately. Use it if a code leaks.
+
+### The Team page and role limits
+
+- Managers and admins see everyone in their organization.
+- **Nobody can create a role above their own:** managers add residents and technicians, and only admins add managers and admins. Otherwise a manager could create a second admin account and take over. The rule is a small table (`ASSIGNABLE_ROLES`), enforced by the API. The form only *shows* the allowed roles, as a convenience.
+- New staff get a **temporary password** chosen by the manager, which they should change. A "change password" screen is a natural next step.
+- Managers can also add **properties**, which were previously fixed.
+
+### Emails are stored in lowercase
+
+The database's uniqueness rule is `(organization_id, email)`, and text comparison in PostgreSQL is **case-sensitive**. Without care, `Me@x.com` and `me@x.com` could become two accounts. Every new email is now lowercased by the Zod schema (`.transform(email => email.toLowerCase())`) before it's saved. Login already compared emails case-insensitively.
+
+### Abuse protection
+
+Signup and join share a rate limit: **10 new accounts per IP per hour**. Without it, a script could create thousands of organizations or flood an organization with fake residents.
+
+### Database permissions, widened carefully
+
+The restricted `fixflow_app` role (chapter 26) now needs to **create** organizations, users and properties, and change join codes. Migration `0006` grants exactly that, and nothing more:
+- ✅ `INSERT` on organizations, users and properties; `UPDATE (join_code)` on organizations
+- ❌ still no `DELETE`, no changing slugs, no changing anyone's role
+
+The permission tests were updated: "can't create a user" was replaced with "can't delete a user", "can't change an organization's slug", and so on. **When you widen permissions, update the tests to describe the new boundary**; don't just delete the failing ones.
+
+### Testing
+
+33 new tests (240 total): signup (including the simultaneous-signup race), joining, team permissions and properties. Breaking the code on purpose: letting managers create admins, showing residents the join code, and skipping email lowercasing were each caught.
+
+---
+
 ## Glossary
 
 | Term | Simple meaning |
@@ -2145,3 +2203,9 @@ Trying the frontend raised a question: *why can a manager create tickets?* The A
 | **Dev proxy** | The dev server forwarding API requests to the backend, so the browser sees one origin |
 | **React context** | A way to share values (like the logged-in user) with every component without passing them down by hand |
 | **XSS** | Cross-site scripting: an attacker getting their JavaScript to run on your page |
+| **Onboarding** | How new users and organizations get into an app (signup, invites, join codes) |
+| **Slug** | A short, URL-friendly ID made from a name, e.g. `sunrise-hostel` |
+| **Join code** | A shared secret that lets people join a specific organization |
+| **Cryptographically secure random** | Randomness that can't be predicted (e.g. `crypto.randomInt`), unlike `Math.random()` |
+| **Privilege escalation** | Gaining more permissions than you should have, e.g. a manager creating an admin account |
+| **Unique violation (23505)** | PostgreSQL's error when an insert would duplicate a value protected by a `UNIQUE` rule |

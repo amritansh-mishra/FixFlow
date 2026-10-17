@@ -1,6 +1,7 @@
 import { isManager, useAuth } from "./auth";
 import { DashboardPage } from "./pages/Dashboard";
 import { LoginPage } from "./pages/Login";
+import { TeamPage } from "./pages/Team";
 import { TicketDetailPage } from "./pages/TicketDetail";
 import { TicketsPage } from "./pages/Tickets";
 import { useRoute } from "./router";
@@ -18,12 +19,17 @@ export function App() {
           <span className="brand-mark" aria-hidden="true">✓</span> FixFlow
         </a>
         <nav className="nav">
-          <a href="#/tickets" className={route.name !== "dashboard" ? "active" : ""}>
+          <a href="#/tickets" className={route.name === "tickets" || route.name === "ticket" ? "active" : ""}>
             Tickets
           </a>
           {isManager(user) && (
             <a href="#/dashboard" className={route.name === "dashboard" ? "active" : ""}>
               Dashboard
+            </a>
+          )}
+          {isManager(user) && (
+            <a href="#/team" className={route.name === "team" ? "active" : ""}>
+              Team
             </a>
           )}
         </nav>
@@ -40,6 +46,7 @@ export function App() {
       <main>
         {route.name === "ticket" && <TicketDetailPage key={route.id} id={route.id} />}
         {route.name === "dashboard" && (isManager(user) ? <DashboardPage /> : <TicketsPage />)}
+        {route.name === "team" && (isManager(user) ? <TeamPage /> : <TicketsPage />)}
         {route.name === "tickets" && <TicketsPage />}
       </main>
     </>

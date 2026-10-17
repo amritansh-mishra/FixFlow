@@ -1,4 +1,4 @@
-// A tiny hash router: #/tickets, #/tickets/<id>, #/dashboard.
+// A tiny hash router: #/tickets, #/tickets/<id>, #/dashboard, #/team.
 // Hash URLs work on any static host without server rewrite rules.
 
 import { useEffect, useState } from "react";
@@ -6,12 +6,14 @@ import { useEffect, useState } from "react";
 export type Route =
   | { name: "tickets" }
   | { name: "ticket"; id: string }
-  | { name: "dashboard" };
+  | { name: "dashboard" }
+  | { name: "team" };
 
 function parse(hash: string): Route {
   const parts = hash.replace(/^#\/?/, "").split("/");
   if (parts[0] === "tickets" && parts[1]) return { name: "ticket", id: parts[1] };
   if (parts[0] === "dashboard") return { name: "dashboard" };
+  if (parts[0] === "team") return { name: "team" };
   return { name: "tickets" };
 }
 

@@ -14,10 +14,27 @@ interface Session {
   user: User;
 }
 
+export interface SignupInput {
+  organizationName: string;
+  organizationSlug: string;
+  name: string;
+  email: string;
+  password: string;
+}
+
+export interface JoinInput {
+  joinCode: string;
+  name: string;
+  email: string;
+  password: string;
+}
+
 interface AuthValue {
   user: User | null;
   token: string | null;
   login: (organization: string, email: string, password: string) => Promise<void>;
+  signup: (body: SignupInput) => Promise<void>;
+  join: (body: JoinInput) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -68,6 +85,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [save],
   );
 
+  // Signing up and joining both create an account and log straight in.
+  const createAccount = useCallback(
+    async (path: string, body: SignupInput | JoinInput) => {
+      const { data } = await api<{ data: { token: string; user: User } }>(path, { method: "POST", body });
+      save({ token: data.token, user: data.user });
+    },
+    [save],
+  );
+  const signup = useCallback((body: SignupInput) => createAccount("/api/auth/signup", body), [createAccount]);
+  const join = useCallback((body: JoinInput) => createAccount("/api/auth/join", body), [createAccount]);
+
   const logout = useCallback(async () => {
     const token = session?.token;
     save(null);
@@ -75,8 +103,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [session, save]);
 
   const value = useMemo(
-    () => ({ user: session?.user ?? null, token: session?.token ?? null, login, logout }),
-    [session, login, logout],
+    () => ({ user: session?.user ?? null, token: session?.token ?? null, login, signup, join, logout }),
+    [session, login, signup, join, logout],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

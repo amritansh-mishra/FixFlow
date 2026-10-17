@@ -13,6 +13,7 @@ A resident reports a leaking tap, a manager assigns a technician, the technician
 
 - **Multi-tenant isolation:** every query is scoped to the user's organization. Composite foreign keys make cross-organization references impossible at the database level.
 - **Authentication:** scrypt password hashing, server-side sessions with hashed tokens, login rate limiting (per account and per IP), and generic errors with equal timing so attackers can't discover which accounts exist.
+- **Self-serve onboarding:** create an organization (you become its admin), invite residents with a regenerable join code, and add staff from a Team page. Managers can add residents and technicians; only admins can add managers.
 - **Role-based access:** residents, technicians, managers and admins each see and do only what their role allows. Hidden tickets return `404`.
 - **Workflow as a state machine:** `open → assigned → in_progress → resolved → closed` (with reopen), with the rules in one policy module.
 - **Audit history:** an append-only event log for every ticket, written in the same transaction as each change.
@@ -25,7 +26,7 @@ A resident reports a leaking tap, a manager assigns a technician, the technician
 
 **Tech stack:** TypeScript, Node.js 24, Express 5, PostgreSQL, Drizzle ORM, Zod, Vitest, OpenAPI/Swagger, GitHub Actions · React 19 + Vite frontend · deployed on Render.
 
-**Frontend** (`frontend/`): log in, browse and search tickets, report problems, assign technicians, move tickets through the workflow with role-aware buttons, comment, see each ticket's history, and a manager dashboard.
+**Frontend** (`frontend/`): sign up or join with a code, log in, browse and search tickets, report problems, assign technicians, move tickets through the workflow with role-aware buttons, comment, see each ticket's history, a manager dashboard, and a Team page (people, join code, properties).
 
 ## Try the demo
 
@@ -37,6 +38,8 @@ The deployed API has a demo organization (`demo`). All demo accounts share the p
 | `technician@example.com` | technician: sees assigned tickets, starts and resolves them |
 | `resident@example.com` | resident: reports tickets, closes resolved ones |
 | `admin@example.com` | admin |
+
+Or try the other ways in: **Create organization** (your own empty one), or **Join with code** using `DEMO-2026` to join the demo as a new resident.
 
 ```bash
 API=https://<your-service>.onrender.com
@@ -116,10 +119,17 @@ npm run user:set-password -- --org <organization-slug> --email <email>
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Service and database status |
+| `POST` | `/api/auth/signup` | `{ organizationName, organizationSlug, name, email, password }`: create an organization and become its admin |
+| `POST` | `/api/auth/join` | `{ joinCode, name, email, password }`: join as a resident |
 | `POST` | `/api/auth/login` | `{ organization, email, password }` → session token |
 | `POST` | `/api/auth/logout` | End the current session → 204 |
 | `GET` | `/api/auth/me` | The logged-in user |
 | `GET` | `/api/properties` | The organization's properties (needed to create tickets) |
+| `GET` | `/api/organization` | Your organization (join code for managers and admins) |
+| `POST` | `/api/organization/join-code` | Replace the join code (managers and admins) |
+| `GET` | `/api/users` | Everyone in the organization (managers and admins) |
+| `POST` | `/api/users` | Add a person with a temporary password |
+| `POST` | `/api/properties` | Add a property (managers and admins) |
 | `GET` | `/api/stats` | Ticket statistics and technician workload (managers and admins) |
 | `GET` | `/api/tickets?status=&priority=&propertyId=&q=&limit=&cursor=` | List visible tickets, newest first. `q` searches title and description; pass `nextCursor` as `cursor` for the next page (`limit` 1–50, default 20) |
 | `GET` | `/api/tickets/:id` | One ticket (404 if it doesn't exist or belongs to another organization) |
