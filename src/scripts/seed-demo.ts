@@ -11,7 +11,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { eq } from "drizzle-orm";
 import pg from "pg";
 import * as schema from "../db/schema.js";
-import { organizations, properties, ticketEvents, tickets, users, type UserRole } from "../db/schema.js";
+import { organizations, properties, ticketComments, ticketEvents, tickets, users, type UserRole } from "../db/schema.js";
 import { hashPassword } from "../lib/passwords.js";
 
 const DEMO_SLUG = "demo";
@@ -72,6 +72,12 @@ async function main() {
       ) => {
         const [row] = await tx.insert(tickets).values({ organizationId: orgId, ...values }).returning();
         await tx.insert(ticketEvents).values(events.map((e) => ({ organizationId: orgId, ticketId: row!.id, ...e })));
+        return row!;
+      };
+      // A comment and its history entry.
+      const say = async (ticketId: string, authorId: string, body: string, when: Date) => {
+        await tx.insert(ticketComments).values({ organizationId: orgId, ticketId, authorId, body, createdAt: when });
+        await tx.insert(ticketEvents).values({ organizationId: orgId, ticketId, actorId: authorId, type: "commented", createdAt: when });
       };
 
       await ticket(
@@ -85,7 +91,7 @@ async function main() {
           { actorId: manager.id, type: "assigned", fromStatus: "open", toStatus: "assigned", assignedTo: tech.id, createdAt: daysAgo(1.5) },
         ],
       );
-      await ticket(
+      const projector = await ticket(
         { propertyId: library!.id, createdBy: resident.id, assignedTo: tech.id, status: "in_progress", title: "Projector not working in seminar hall", priority: "urgent", createdAt: daysAgo(3) },
         [
           { actorId: resident.id, type: "created", toStatus: "open", createdAt: daysAgo(3) },
@@ -93,6 +99,9 @@ async function main() {
           { actorId: tech.id, type: "status_changed", fromStatus: "assigned", toStatus: "in_progress", createdAt: daysAgo(2.5) },
         ],
       );
+      await say(projector.id, resident.id, "We have a guest lecture on Friday. Any chance it is fixed by then?", daysAgo(2.4));
+      await say(projector.id, tech.id, "The lamp has burnt out. Replacement ordered, it arrives Thursday.", daysAgo(2.2));
+      await say(projector.id, manager.id, "Thanks Ravi. Please confirm here once it is installed.", daysAgo(2));
       await ticket(
         { propertyId: library!.id, createdBy: resident2.id, assignedTo: tech.id, status: "resolved", title: "Flickering lights in reading room", priority: "low", createdAt: daysAgo(6) },
         [
