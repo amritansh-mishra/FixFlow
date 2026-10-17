@@ -6,9 +6,11 @@ import { openApiDocument } from "./docs/openapi.js";
 import { pool } from "./db/index.js";
 import { errorHandler, notFoundHandler } from "./middleware/errors.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
+import { organizationRouter } from "./modules/organization/organization.routes.js";
 import { propertiesRouter } from "./modules/properties/properties.routes.js";
 import { statsRouter } from "./modules/stats/stats.routes.js";
 import { ticketsRouter } from "./modules/tickets/tickets.routes.js";
+import { usersRouter } from "./modules/users/users.routes.js";
 
 // Builds the Express app without starting a listener, so tests can import it.
 export function createApp() {
@@ -51,9 +53,11 @@ export function createApp() {
 
   app.use(docsRouter);
   app.use("/api/auth", authRouter);
+  app.use("/api/organization", organizationRouter);
   app.use("/api/properties", propertiesRouter);
   app.use("/api/stats", statsRouter);
   app.use("/api/tickets", ticketsRouter);
+  app.use("/api/users", usersRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

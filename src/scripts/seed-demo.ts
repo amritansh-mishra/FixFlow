@@ -41,7 +41,11 @@ async function main() {
     const passwordHash = await hashPassword(password);
 
     await db.transaction(async (tx) => {
-      const [org] = await tx.insert(organizations).values({ name: "Demo Campus", slug: DEMO_SLUG }).returning();
+      // A fixed, public join code so visitors can try joining as a resident.
+      const [org] = await tx
+        .insert(organizations)
+        .values({ name: "Demo Campus", slug: DEMO_SLUG, joinCode: "DEMO-2026" })
+        .returning();
       const orgId = org!.id;
 
       const [hostel, library] = await tx

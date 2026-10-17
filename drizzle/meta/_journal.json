@@ -43,6 +43,13 @@
       "when": 1792260651355,
       "tag": "0005_ticket_comments",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792264110392,
+      "tag": "0006_signup_and_team",
+      "breakpoints": true
     }
   ]
 }

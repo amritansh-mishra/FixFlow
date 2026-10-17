@@ -39,9 +39,10 @@ describe.skipIf(!usingRestrictedAppRole())("the app's database role", () => {
     ["create a table", sql`CREATE TABLE sneaky (id int)`],
     ["change a table", sql`ALTER TABLE tickets ADD COLUMN sneaky text`],
     ["read the migration log", sql`SELECT * FROM drizzle.__drizzle_migrations`],
-    ["create an organization", sql`INSERT INTO organizations (name, slug) VALUES ('x', 'x')`],
-    ["create a user", sql`INSERT INTO users (organization_id, name, email, role)
-                          SELECT id, 'x', 'x@x.test', 'admin' FROM organizations LIMIT 1`],
+    ["delete an organization", sql`DELETE FROM organizations`],
+    ["change an organization's slug", sql`UPDATE organizations SET slug = 'taken'`],
+    ["delete a user", sql`DELETE FROM users`],
+    ["delete a property", sql`DELETE FROM properties`],
     ["change a user's role", sql`UPDATE users SET role = 'admin'`],
     ["delete a ticket", sql`DELETE FROM tickets`],
     ["change a ticket's organization", sql`UPDATE tickets SET organization_id = organization_id`],

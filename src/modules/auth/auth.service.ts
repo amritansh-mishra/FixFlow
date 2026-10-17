@@ -3,8 +3,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq, gt, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import { organizations, sessions, users, type UserRole } from "../../db/schema.js";
+import { organizations, properties, sessions, users, type UserRole } from "../../db/schema.js";
+import { generateJoinCode, isUniqueViolation } from "../../lib/codes.js";
 import { hashPassword, verifyPassword } from "../../lib/passwords.js";
+import { HttpError } from "../../middleware/errors.js";
+import type { JoinBody, SignupBody } from "./auth.schemas.js";
 
 const SESSION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -120,4 +123,64 @@ export async function getCurrentUser(userId: string) {
     .from(users)
     .where(eq(users.id, userId));
   return user ?? null;
+}
+
+const publicUserFields = {
+  id: users.id,
+  organizationId: users.organizationId,
+  name: users.name,
+  email: users.email,
+  role: users.role,
+};
+
+// Creates an organization with the caller as its admin and a first property,
+// then logs them in. Everything is created together or not at all.
+export async function signup(input: SignupBody) {
+  const passwordHash = await hashPassword(input.password);
+  try {
+    const user = await db.transaction(async (tx) => {
+      const [org] = await tx
+        .insert(organizations)
+        .values({ name: input.organizationName, slug: input.organizationSlug, joinCode: generateJoinCode() })
+        .returning({ id: organizations.id });
+      await tx.insert(properties).values({ organizationId: org!.id, name: "Main building" });
+      const [admin] = await tx
+        .insert(users)
+        .values({ organizationId: org!.id, name: input.name, email: input.email, role: "admin", passwordHash })
+        .returning(publicUserFields);
+      return admin!;
+    });
+    return { ...(await createSession(user)), user };
+  } catch (err) {
+    // Checked by the database, so two simultaneous signups can't both win.
+    if (isUniqueViolation(err, "organizations_slug_key")) {
+      throw new HttpError(409, "SLUG_TAKEN", "That organization ID is already taken. Try another one.");
+    }
+    throw err;
+  }
+}
+
+// Joins the organization that owns the code, as a resident, and logs in.
+export async function joinWithCode(input: JoinBody) {
+  const [org] = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.joinCode, input.joinCode));
+  if (!org) {
+    throw new HttpError(400, "INVALID_JOIN_CODE", "That join code isn't valid. Ask your manager for the current one.");
+  }
+
+  const passwordHash = await hashPassword(input.password);
+  try {
+    const [user] = await db
+      .insert(users)
+      .values({ organizationId: org.id, name: input.name, email: input.email, role: "resident", passwordHash })
+      .returning(publicUserFields);
+    return { ...(await createSession(user!)), user: user! };
+  } catch (err) {
+    if (isUniqueViolation(err, "users_organization_id_email_key")) {
+      throw new HttpError(409, "EMAIL_TAKEN", "An account with that email already exists here. Log in instead.");
+    }
+    throw err;
+  }
 }

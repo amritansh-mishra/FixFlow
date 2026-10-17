@@ -6,7 +6,9 @@
 
 import { z } from "zod";
 import { TICKET_EVENT_TYPES, TICKET_PRIORITIES, TICKET_STATUSES, USER_ROLES } from "../db/schema.js";
-import { loginBody } from "../modules/auth/auth.schemas.js";
+import { joinBody, loginBody, signupBody } from "../modules/auth/auth.schemas.js";
+import { addPropertyBody } from "../modules/properties/properties.routes.js";
+import { addUserBody } from "../modules/users/users.routes.js";
 import {
   addCommentBody,
   assignTicketBody,
@@ -198,6 +200,73 @@ export const openApiDocument = {
         },
       },
     },
+    "/api/auth/signup": {
+      post: {
+        tags: ["Auth"],
+        operationId: "signup",
+        summary: "Create an organization and become its admin",
+        description:
+          "Also creates a first property (\"Main building\") and a join code, and logs you in. " +
+          "Rate-limited to 10 new accounts per IP per hour (shared with /join).",
+        security: [],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: fromZod(signupBody),
+              example: {
+                organizationName: "Sunrise Hostel",
+                organizationSlug: "sunrise-hostel",
+                name: "Asha",
+                email: "asha@example.com",
+                password: "a long passphrase",
+              },
+            },
+          },
+        },
+        responses: {
+          "201": {
+            description: "Created and logged in",
+            content: dataOf({
+              type: "object",
+              properties: { token: { type: "string" }, expiresAt: timestamp, user: ref("User") },
+            }),
+          },
+          "400": commonErrors["400"],
+          "409": errorResponse("That organization slug is taken"),
+          "429": errorResponse("Too many accounts created from this network"),
+        },
+      },
+    },
+    "/api/auth/join": {
+      post: {
+        tags: ["Auth"],
+        operationId: "joinWithCode",
+        summary: "Join an organization as a resident, using its join code",
+        security: [],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: fromZod(joinBody),
+              example: { joinCode: "K7QM-3XPA", name: "Rohan", email: "rohan@example.com", password: "a long passphrase" },
+            },
+          },
+        },
+        responses: {
+          "201": {
+            description: "Joined and logged in",
+            content: dataOf({
+              type: "object",
+              properties: { token: { type: "string" }, expiresAt: timestamp, user: ref("User") },
+            }),
+          },
+          "400": errorResponse("Invalid input, or the join code doesn't exist"),
+          "409": errorResponse("An account with that email already exists in the organization"),
+          "429": errorResponse("Too many accounts created from this network"),
+        },
+      },
+    },
     "/api/auth/logout": {
       post: {
         tags: ["Auth"],
@@ -231,6 +300,77 @@ export const openApiDocument = {
             }),
           },
           "401": commonErrors["401"],
+        },
+      },
+      post: {
+        tags: ["Organization"],
+        operationId: "addProperty",
+        summary: "Add a property (managers and admins)",
+        requestBody: { required: true, content: json(fromZod(addPropertyBody)) },
+        responses: {
+          "201": {
+            description: "Added",
+            content: dataOf({
+              type: "object",
+              properties: { id: uuid, name: { type: "string" }, address: nullable({ type: "string" }) },
+            }),
+          },
+          ...commonErrors,
+          "403": errorResponse("Not a manager or admin"),
+        },
+      },
+    },
+    "/api/organization": {
+      get: {
+        tags: ["Organization"],
+        operationId: "getOrganization",
+        summary: "Your organization (the join code is shown to managers and admins only)",
+        responses: {
+          "200": {
+            description: "OK",
+            content: dataOf({
+              type: "object",
+              properties: { id: uuid, name: { type: "string" }, slug: { type: "string" }, joinCode: { type: "string" } },
+            }),
+          },
+          "401": commonErrors["401"],
+        },
+      },
+    },
+    "/api/organization/join-code": {
+      post: {
+        tags: ["Organization"],
+        operationId: "regenerateJoinCode",
+        summary: "Replace the join code (managers and admins); the old one stops working",
+        responses: {
+          "200": { description: "New code", content: dataOf({ type: "object", properties: { joinCode: { type: "string" } } }) },
+          "401": commonErrors["401"],
+          "403": errorResponse("Not a manager or admin"),
+        },
+      },
+    },
+    "/api/users": {
+      get: {
+        tags: ["Organization"],
+        operationId: "listUsers",
+        summary: "Everyone in the organization (managers and admins)",
+        responses: {
+          "200": { description: "OK", content: dataOf({ type: "array", items: ref("User") }) },
+          "401": commonErrors["401"],
+          "403": errorResponse("Not a manager or admin"),
+        },
+      },
+      post: {
+        tags: ["Organization"],
+        operationId: "addUser",
+        summary: "Add a person with a temporary password",
+        description: "Managers can add residents and technicians; admins can add any role.",
+        requestBody: { required: true, content: json(fromZod(addUserBody)) },
+        responses: {
+          "201": { description: "Added", content: dataOf(ref("User")) },
+          ...commonErrors,
+          "403": errorResponse("Not allowed to add that role"),
+          "409": errorResponse("That email is already used in the organization"),
         },
       },
     },

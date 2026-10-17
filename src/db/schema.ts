@@ -34,9 +34,14 @@ export const organizations = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     name: varchar("name", { length: 150 }).notNull(),
     slug: varchar("slug", { length: 100 }).notNull(),
+    // Code residents use to join (e.g. "K7QM-3XPA"). NULL until generated.
+    joinCode: varchar("join_code", { length: 20 }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [unique("organizations_slug_key").on(t.slug)],
+  (t) => [
+    unique("organizations_slug_key").on(t.slug),
+    unique("organizations_join_code_key").on(t.joinCode),
+  ],
 );
 
 export const users = pgTable(

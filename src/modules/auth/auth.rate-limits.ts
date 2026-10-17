@@ -15,6 +15,10 @@ export const loginLimits = {
   ip: new FixedWindowLimiter(20, WINDOW_MS),
 };
 
+// Creating accounts (signup or joining with a code): 10 per IP per hour, so
+// nobody can mass-create organizations or flood one with fake residents.
+export const accountCreationLimit = new FixedWindowLimiter(10, 60 * 60 * 1000);
+
 export function accountKey(organization: string, email: string): string {
   return `${organization}\n${email.toLowerCase()}`;
 }
@@ -23,10 +27,12 @@ export function accountKey(organization: string, email: string): string {
 export function resetLoginLimits(): void {
   loginLimits.account.clear();
   loginLimits.ip.clear();
+  accountCreationLimit.clear();
 }
 
 // Clear out old windows every minute. unref() lets the process exit anyway.
 setInterval(() => {
   loginLimits.account.prune();
   loginLimits.ip.prune();
+  accountCreationLimit.prune();
 }, 60_000).unref();

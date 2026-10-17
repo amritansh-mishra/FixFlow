@@ -3,9 +3,9 @@ import { env } from "../../config/env.js";
 import { validate } from "../../lib/validate.js";
 import { getAuth } from "../../middleware/auth.js";
 import { HttpError } from "../../middleware/errors.js";
-import { accountKey, loginLimits } from "./auth.rate-limits.js";
-import { loginBody } from "./auth.schemas.js";
-import { deleteSession, getCurrentUser, login } from "./auth.service.js";
+import { accountCreationLimit, accountKey, loginLimits } from "./auth.rate-limits.js";
+import { joinBody, loginBody, signupBody } from "./auth.schemas.js";
+import { deleteSession, getCurrentUser, joinWithCode, login, signup } from "./auth.service.js";
 
 // Security log lines, kept out of test output. Never include passwords.
 function securityLog(message: string) {
@@ -59,4 +59,33 @@ export const logoutHandler: RequestHandler = async (req, res) => {
 export const meHandler: RequestHandler = async (req, res) => {
   const user = await getCurrentUser(getAuth(req).userId);
   res.status(200).json({ data: user });
+};
+
+// Shared by signup and join: refuse once an IP has created too many accounts.
+function checkAccountCreationLimit(ip: string, res: Parameters<RequestHandler>[1]) {
+  const waitMs = accountCreationLimit.retryAfterMs(ip);
+  if (waitMs > 0) {
+    res.set("Retry-After", String(Math.ceil(waitMs / 1000)));
+    securityLog(`Account creation rate-limited: ip=${ip}`);
+    throw new HttpError(429, "TOO_MANY_ATTEMPTS", "Too many accounts created from this network. Try again later.");
+  }
+  accountCreationLimit.hit(ip);
+}
+
+// POST /api/auth/signup
+export const signupHandler: RequestHandler = async (req, res) => {
+  const body = validate(signupBody, req.body, "request body");
+  checkAccountCreationLimit(req.ip ?? "unknown", res);
+
+  const result = await signup(body);
+  res.status(201).json({ data: { token: result.token, expiresAt: result.expiresAt, user: result.user } });
+};
+
+// POST /api/auth/join
+export const joinHandler: RequestHandler = async (req, res) => {
+  const body = validate(joinBody, req.body, "request body");
+  checkAccountCreationLimit(req.ip ?? "unknown", res);
+
+  const result = await joinWithCode(body);
+  res.status(201).json({ data: { token: result.token, expiresAt: result.expiresAt, user: result.user } });
 };
