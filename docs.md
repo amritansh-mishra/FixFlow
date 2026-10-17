@@ -21,7 +21,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 15. [ORMs and Drizzle](#15-orms-and-drizzle)
 16. [Drizzle Kit and migrations](#16-drizzle-kit-and-migrations)
 17. [Git: commits, pushes and viewing diffs](#17-git-commits-pushes-and-viewing-diffs)
-18. [Glossary](#glossary)
+p 18. [Why we wrote our own baseline before switching to Drizzle](#18-why-we-wrote-our-own-baseline-before-switching-to-drizzle)
+19. [Glossary](#glossary)
 
 ---
 
@@ -468,6 +469,125 @@ git log --oneline   # see history
 - **Uncommitted changes:** Source Control panel (Ctrl+Shift+G), then click a file. Red is removed, green is added.
 - **A past commit:** open a file, then the **Timeline** section in the Explorer sidebar, then click a commit.
 - **Command line:** `code --diff old-file new-file` opens a side-by-side diff.
+
+---
+
+## 18. Why we wrote our own baseline before switching to Drizzle
+
+### The question
+
+The plan is to use **Drizzle Kit** for migrations. So why did we first write `0000_baseline.sql` and our own runner (`migrate.ts`) by hand, only to hand over to Drizzle afterwards? Wasn't that doing the work twice?
+
+It's a fair question. The honest answer is that part of it was valuable and part of it was extra work.
+
+### Reason 1: Back up first, change tools second
+
+Before task 2, the database structure existed in **only one place**: inside PostgreSQL on this laptop. No file in the repo described it. If the laptop died, or a command went wrong during the Drizzle setup, the schema could have been lost.
+
+The baseline file put a **verified copy of the schema on GitHub before touching any new tool.**
+
+**Analogy:** before reinstalling your operating system, you back up your files. You don't start the reinstall and hope nothing goes wrong.
+
+General rule: **before changing anything risky, make sure you can get back to where you started.**
+
+### Reason 2: Something to check Drizzle's output against
+
+`drizzle-kit pull` reads the database and **writes `schema.ts` for you**. But how do you know the generated file is correct and complete? Tools can miss things, such as a constraint, a default value, or a constraint name.
+
+We now have a reference that's **proven** correct. We built a throwaway database from `0000_baseline.sql`, exported its structure with `pg_dump --schema-only`, and compared it line by line with the real database's export. They were **identical**.
+
+So when Drizzle generates `schema.ts`, we can compare the two:
+- Does every table appear?
+- Does every column have the same type, length, `NOT NULL` and default?
+- Are all the `UNIQUE`, `CHECK` and composite foreign key rules there?
+
+Without the baseline, there would be nothing trustworthy to compare against.
+
+**Analogy:** an answer key. You can't mark a test without one.
+
+### Reason 3: Real problems got fixed straight away
+
+The audit found two real problems:
+- The **3 ticket indexes** had never been created.
+- **`updated_at`** never changed after a ticket was first created.
+
+Migration `0001` fixed both immediately, tested and verified, instead of leaving them until the Drizzle setup was finished.
+
+### Reason 4: Drizzle can't write triggers anyway
+
+Drizzle Kit generates SQL for tables, columns, indexes and constraints. It **doesn't understand triggers or functions** (see chapter 16). The `set_updated_at()` function and the `tickets_set_updated_at` trigger would have been written **by hand in SQL** whichever tool we used. That work isn't wasted: the same SQL moves over to Drizzle as a **custom migration**.
+
+### Reason 5: Learning how migration tools work inside
+
+Writing `migrate.ts` showed exactly what `drizzle-kit migrate` does behind the scenes (chapter 13):
+
+| What our runner does | Why it matters |
+|---|---|
+| Keeps a logbook table (`schema_migrations`) | Knows which files already ran, so it's safe to run twice |
+| Stores a checksum (fingerprint) per file | Catches migrations edited after they ran |
+| Runs each file in a transaction | A failed migration leaves no half-done changes |
+| Records the baseline without running it | Lets an existing database join the migration system |
+| Has a dry-run mode | You can rehearse before changing anything |
+| Uses an advisory lock | Two runs at once can't collide |
+
+When Drizzle Kit does these things, it's no longer a mysterious black box. You know what it's doing and why.
+
+### Was it the ideal approach?
+
+**✅ Ideal, and worth repeating on every project:**
+- **Backing up the schema** before changing tools.
+- **Verifying what's really in the database** instead of trusting notes. The audit found indexes that were supposedly created but weren't.
+- The safe-change workflow: **scratch database → dry run → apply → verify** (chapter 14).
+
+**❌ Not ideal as engineering practice:**
+- **We built a runner only to retire it.** A real team would **choose the migration tool first** and create the baseline with that tool from the start, so there's never a second system to hand over from.
+- **The risk was small.** With 1 row per table and one developer, running `drizzle-kit pull` directly would have been almost as safe, because `pull` **only reads** the database and never changes it.
+
+### The most efficient order (for next time)
+
+If starting again, or on a future project, the shortest safe path is:
+
+1. **Audit:** check what's really in the database.
+2. **Choose the migration tool** (Drizzle Kit), before writing any migration files.
+3. **`drizzle-kit pull`:** generate `schema.ts` from the real database (read-only).
+4. **Verify against `pg_dump`:** confirm the generated schema matches the real structure.
+5. **Mark Drizzle's baseline as applied** on the existing database (record it without running it).
+6. **Write the fixes as Drizzle migrations:** the indexes as normal migrations, the trigger as a custom SQL migration.
+7. **Test on a scratch database.**
+8. **Apply to the real database** (dry run first), then verify.
+
+### Verdict
+
+**A good learning path, but extra work as engineering practice.** Little is actually lost:
+- The **verified baseline** remains the answer key for checking Drizzle's output.
+- The **SQL in `0001`** (indexes and trigger) carries over to Drizzle unchanged.
+- Only **`migrate.ts`** gets retired, and the understanding it gave stays.
+
+### Where did `0001` come from?
+
+It wasn't invented during task 2. Both parts came from the original project plan:
+
+- **The 3 indexes** (`idx_tickets_org_status`, `idx_tickets_assigned_to`, `idx_tickets_property`) were in the original SQL I wrote for the `tickets` table. When the audit checked the real database, they **didn't exist**. The `CREATE TABLE` had run, but the `CREATE INDEX` commands after it never did. That could be from running only part of the script, or from an error stopping it partway.
+- **The trigger** fixes a problem my original notes already flagged: *"`updated_at` currently has a default value but is not automatically updated on every modification."*
+
+**Lesson:** "I wrote the SQL" isn't the same as "the SQL ran". Always check the real database.
+
+### Why a separate file instead of adding to the baseline?
+
+Each file has **one honest job**:
+
+| File | Describes |
+|---|---|
+| `0000_baseline.sql` | What the database **actually looked like** before migrations existed |
+| `0001_tickets_indexes_and_updated_at.sql` | The **changes** made on top of that |
+
+**What would go wrong if the indexes had been added to the baseline:**
+
+1. **The baseline would no longer be true.** It would describe indexes the real database didn't have, so it would stop being a reliable answer key.
+2. **The indexes would never have been created on the real database.** The runner **records the baseline without running it** on databases whose tables already exist (chapter 13). Anything added to the baseline would be silently skipped on `flixflow`, and the real database would still have no indexes.
+3. **History would be hidden.** Separate files show that the indexes were missing and were added later. That story is useful when debugging.
+
+**Rule of thumb:** a baseline describes the past exactly as it was. Every change, even a fix for something that "should have been there all along", goes in a new migration.
 
 ---
 
