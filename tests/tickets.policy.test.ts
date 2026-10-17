@@ -5,7 +5,7 @@ import type { UserRole } from "../src/db/schema.js";
 import type { AuthContext } from "../src/middleware/auth.js";
 import { canAssign, findTransition, isAssignable } from "../src/modules/tickets/tickets.policy.js";
 
-const as = (userId: string, role: UserRole): AuthContext => ({ userId, organizationId: "org", role });
+const as = (userId: string, role: UserRole): AuthContext => ({ sessionId: "s", userId, organizationId: "org", role });
 
 const ticket = { createdBy: "creator", assignedTo: "tech" };
 

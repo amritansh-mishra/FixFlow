@@ -13,34 +13,11 @@ afterAll(() => pool.end());
 
 type Titled = { title: string };
 
-describe("authentication placeholder", () => {
-  it("returns 401 without a user", async () => {
-    const res = await request(app).get("/api/tickets");
-
-    expect(res.status).toBe(401);
-    expect(res.body.error.code).toBe("UNAUTHENTICATED");
-  });
-
-  it("returns 400 when the user id is not a UUID", async () => {
-    const res = await request(app).get("/api/tickets").set("X-User-Id", "not-a-uuid");
-
-    expect(res.status).toBe(400);
-    expect(res.body.error.code).toBe("VALIDATION_ERROR");
-  });
-
-  it("returns 401 for a user that doesn't exist", async () => {
-    const res = await request(app).get("/api/tickets").set("X-User-Id", NONEXISTENT_ID);
-
-    expect(res.status).toBe(401);
-    expect(res.body.error.message).toBe("Unknown user");
-  });
-});
-
 describe("GET /api/tickets", () => {
   it("returns an empty list when the organization has no tickets", async () => {
     const a = await createOrg("a");
 
-    const res = await request(app).get("/api/tickets").set("X-User-Id", a.resident.id);
+    const res = await request(app).get("/api/tickets").auth(a.resident.token, { type: "bearer" });
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ data: [] });
@@ -52,7 +29,7 @@ describe("GET /api/tickets", () => {
     await createTicket(a, { title: "A's ticket" });
     await createTicket(b, { title: "B's ticket" });
 
-    const res = await request(app).get("/api/tickets").set("X-User-Id", a.resident.id);
+    const res = await request(app).get("/api/tickets").auth(a.resident.token, { type: "bearer" });
 
     expect(res.status).toBe(200);
     expect(res.body.data.map((t: Titled) => t.title)).toEqual(["A's ticket"]);
@@ -64,7 +41,7 @@ describe("GET /api/tickets", () => {
     await createTicket(a, { title: "new", createdAt: new Date("2026-03-01T00:00:00Z") });
     await createTicket(a, { title: "middle", createdAt: new Date("2026-02-01T00:00:00Z") });
 
-    const res = await request(app).get("/api/tickets").set("X-User-Id", a.resident.id);
+    const res = await request(app).get("/api/tickets").auth(a.resident.token, { type: "bearer" });
 
     expect(res.body.data.map((t: Titled) => t.title)).toEqual(["new", "middle", "old"]);
   });
@@ -74,7 +51,7 @@ describe("GET /api/tickets", () => {
     await createTicket(a, { title: "open one" });
     await createTicket(a, { title: "resolved one", status: "resolved" });
 
-    const res = await request(app).get("/api/tickets?status=resolved").set("X-User-Id", a.resident.id);
+    const res = await request(app).get("/api/tickets?status=resolved").auth(a.resident.token, { type: "bearer" });
 
     expect(res.status).toBe(200);
     expect(res.body.data.map((t: Titled) => t.title)).toEqual(["resolved one"]);
@@ -84,7 +61,7 @@ describe("GET /api/tickets", () => {
     const a = await createOrg("a");
     for (let i = 0; i < 3; i++) await createTicket(a, { title: `t${i}` });
 
-    const res = await request(app).get("/api/tickets?limit=2").set("X-User-Id", a.resident.id);
+    const res = await request(app).get("/api/tickets?limit=2").auth(a.resident.token, { type: "bearer" });
 
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(2);
@@ -93,7 +70,7 @@ describe("GET /api/tickets", () => {
   it.each(["0", "51", "abc", "1.5"])("rejects limit=%s", async (limit) => {
     const a = await createOrg("a");
 
-    const res = await request(app).get(`/api/tickets?limit=${limit}`).set("X-User-Id", a.resident.id);
+    const res = await request(app).get(`/api/tickets?limit=${limit}`).auth(a.resident.token, { type: "bearer" });
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("VALIDATION_ERROR");
@@ -103,7 +80,7 @@ describe("GET /api/tickets", () => {
   it("rejects an unknown status", async () => {
     const a = await createOrg("a");
 
-    const res = await request(app).get("/api/tickets?status=done").set("X-User-Id", a.resident.id);
+    const res = await request(app).get("/api/tickets?status=done").auth(a.resident.token, { type: "bearer" });
 
     expect(res.status).toBe(400);
     expect(res.body.error.details[0].path).toBe("status");
@@ -113,7 +90,7 @@ describe("GET /api/tickets", () => {
     const a = await createOrg("a");
     const ticket = await createTicket(a, { title: "Broken light", priority: "high" });
 
-    const res = await request(app).get("/api/tickets").set("X-User-Id", a.resident.id);
+    const res = await request(app).get("/api/tickets").auth(a.resident.token, { type: "bearer" });
 
     expect(res.body.data[0]).toMatchObject({
       id: ticket.id,
@@ -134,7 +111,7 @@ describe("GET /api/tickets/:id", () => {
     const a = await createOrg("a");
     const ticket = await createTicket(a, { title: "Broken window" });
 
-    const res = await request(app).get(`/api/tickets/${ticket.id}`).set("X-User-Id", a.resident.id);
+    const res = await request(app).get(`/api/tickets/${ticket.id}`).auth(a.resident.token, { type: "bearer" });
 
     expect(res.status).toBe(200);
     expect(res.body.data).toMatchObject({ id: ticket.id, title: "Broken window" });
@@ -145,7 +122,7 @@ describe("GET /api/tickets/:id", () => {
     const b = await createOrg("b");
     const bTicket = await createTicket(b, { title: "B's secret ticket" });
 
-    const res = await request(app).get(`/api/tickets/${bTicket.id}`).set("X-User-Id", a.resident.id);
+    const res = await request(app).get(`/api/tickets/${bTicket.id}`).auth(a.resident.token, { type: "bearer" });
 
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe("TICKET_NOT_FOUND");
@@ -155,7 +132,7 @@ describe("GET /api/tickets/:id", () => {
   it("returns 404 for a ticket that doesn't exist", async () => {
     const a = await createOrg("a");
 
-    const res = await request(app).get(`/api/tickets/${NONEXISTENT_ID}`).set("X-User-Id", a.resident.id);
+    const res = await request(app).get(`/api/tickets/${NONEXISTENT_ID}`).auth(a.resident.token, { type: "bearer" });
 
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe("TICKET_NOT_FOUND");
@@ -164,7 +141,7 @@ describe("GET /api/tickets/:id", () => {
   it("returns 400 for an id that isn't a UUID", async () => {
     const a = await createOrg("a");
 
-    const res = await request(app).get("/api/tickets/123").set("X-User-Id", a.resident.id);
+    const res = await request(app).get("/api/tickets/123").auth(a.resident.token, { type: "bearer" });
 
     expect(res.status).toBe(400);
     expect(res.body.error.details[0].path).toBe("id");
@@ -177,7 +154,7 @@ describe("POST /api/tickets", () => {
 
     const res = await request(app)
       .post("/api/tickets")
-      .set("X-User-Id", a.resident.id)
+      .auth(a.resident.token, { type: "bearer" })
       .send({ propertyId: a.property.id, title: "Leaking tap", description: "Kitchen sink" });
 
     expect(res.status).toBe(201);
@@ -199,9 +176,9 @@ describe("POST /api/tickets", () => {
 
     const created = await request(app)
       .post("/api/tickets")
-      .set("X-User-Id", a.resident.id)
+      .auth(a.resident.token, { type: "bearer" })
       .send({ propertyId: a.property.id, title: "No hot water", priority: "urgent" });
-    const fetched = await request(app).get(created.headers.location!).set("X-User-Id", a.resident.id);
+    const fetched = await request(app).get(created.headers.location!).auth(a.resident.token, { type: "bearer" });
 
     expect(fetched.status).toBe(200);
     expect(fetched.body.data).toMatchObject({ title: "No hot water", priority: "urgent" });
@@ -212,7 +189,7 @@ describe("POST /api/tickets", () => {
 
     const res = await request(app)
       .post("/api/tickets")
-      .set("X-User-Id", a.resident.id)
+      .auth(a.resident.token, { type: "bearer" })
       .send({ propertyId: a.property.id, title: "   Broken door   " });
 
     expect(res.status).toBe(201);
@@ -230,7 +207,7 @@ describe("POST /api/tickets", () => {
 
     const res = await request(app)
       .post("/api/tickets")
-      .set("X-User-Id", a.resident.id)
+      .auth(a.resident.token, { type: "bearer" })
       .send({ propertyId: a.property.id, ...overrides });
 
     expect(res.status).toBe(400);
@@ -244,7 +221,7 @@ describe("POST /api/tickets", () => {
 
     const res = await request(app)
       .post("/api/tickets")
-      .set("X-User-Id", a.resident.id)
+      .auth(a.resident.token, { type: "bearer" })
       .send({ propertyId: a.property.id, title: "Sneaky", organizationId: b.org.id, status: "closed" });
 
     expect(res.status).toBe(400);
@@ -257,7 +234,7 @@ describe("POST /api/tickets", () => {
 
     const res = await request(app)
       .post("/api/tickets")
-      .set("X-User-Id", a.resident.id)
+      .auth(a.resident.token, { type: "bearer" })
       .send({ propertyId: b.property.id, title: "Cross-org" });
 
     expect(res.status).toBe(400);
@@ -270,7 +247,7 @@ describe("POST /api/tickets", () => {
 
     const res = await request(app)
       .post("/api/tickets")
-      .set("X-User-Id", a.resident.id)
+      .auth(a.resident.token, { type: "bearer" })
       .set("Content-Type", "application/json")
       .send("[1, 2, 3]");
 

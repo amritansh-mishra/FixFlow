@@ -27,7 +27,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 21. [Automated tests](#21-automated-tests)
 22. [Validation with Zod, GET one ticket, create a ticket](#22-validation-with-zod-get-one-ticket-create-a-ticket)
 23. [Assignment, status workflow, history and race conditions](#23-assignment-status-workflow-history-and-race-conditions)
-24. [Glossary](#glossary)
+24. [Real authentication: passwords, login and sessions](#24-real-authentication-passwords-login-and-sessions)
+25. [Glossary](#glossary)
 
 ---
 
@@ -1378,6 +1379,168 @@ The "break it on purpose" results for the rules:
 
 ---
 
+## 24. Real authentication: passwords, login and sessions
+
+### What changed
+
+The temporary `X-User-Id` header is **gone**. Anyone could pretend to be anyone with it. Now:
+
+```
+POST /api/auth/login   { organization, email, password }  → { token, expiresAt, user }
+GET  /api/tickets      Authorization: Bearer <token>       → only works with a valid token
+POST /api/auth/logout                                      → token stops working
+GET  /api/auth/me                                          → who am I?
+```
+
+Plus `npm run user:set-password` to give a user a password from the terminal.
+
+**Authentication vs authorization**, two words that are easy to mix up:
+- **Authentication** = *who are you?* (this chapter: passwords, login, sessions)
+- **Authorization** = *what are you allowed to do?* (chapter 23's policy rules)
+
+Everything from chapters 20–23 kept working **unchanged**, because the controllers only ever read `req.auth`. Only the middleware that *fills in* `req.auth` changed, exactly as planned in chapter 20.
+
+### Decisions made (and why)
+
+| Question | Choice | Why |
+|---|---|---|
+| How does a logged-in user prove who they are? | **Server-side sessions** | Logout works instantly (delete a row). JWTs can't be cancelled before they expire without extra machinery |
+| How does login identify the user? | **Org slug + email + password** | Emails are only unique per organization, like Slack workspaces |
+| How does the first user get a password? | **CLI script** with a hidden prompt | The password never touches shell history, code, or chat |
+| Password hashing? | **scrypt**, built into Node | Recommended by OWASP, no extra package to install |
+| Where does the token go? | `Authorization: Bearer` header | Cookies need CSRF protection, which matters once the browser frontend exists |
+
+### Part 1: never store passwords, store hashes
+
+**A hash** is a one-way scramble: easy to compute from the password, practically impossible to reverse.
+
+```
+"correct horse battery staple"  ──scrypt──▶  scrypt$32768$8$3$<salt>$<hash>
+```
+
+At login we hash what the user typed **the same way** and compare. The real password is never stored anywhere.
+
+**Why a *slow* hash?** If an attacker steals the `users` table, they'll try billions of guesses offline. A normal hash like SHA-256 can be computed **billions of times per second**. **scrypt** is deliberately slow (~180 ms here) and needs 32 MB of memory per guess, which slows an attacker down by a factor of millions. 180 ms is nothing for one login, but enormous for a billion guesses.
+
+**Salt:** a random value mixed into each password before hashing. Two users with the same password get **completely different hashes**, so an attacker can't crack everyone at once, or use pre-computed tables of common passwords ("rainbow tables").
+
+```ts
+const first = await hashPassword(PASSWORD);
+const second = await hashPassword(PASSWORD);
+expect(first).not.toBe(second);   // same password, different salt → different hash
+```
+
+**The stored format keeps the settings with the hash:** `scrypt$N$r$p$salt$hash`. If we raise the cost later, old hashes still verify with their old settings.
+
+**Constant-time comparison:** `timingSafeEqual(actual, expected)` takes the same time whether 0 or 63 of the 64 bytes match. A normal `===` stops at the first difference, which leaks tiny timing clues.
+
+**Password rules:** at least **12 characters**, at most 128. No "must contain a symbol" rules: **length matters far more**, and passphrases like `correct horse battery staple` are both stronger and easier to remember (this is current NIST guidance). The maximum stops someone sending a 10 MB "password" to waste server time.
+
+### Part 2: sessions, the "wristband" after login
+
+Checking a password takes ~180 ms on purpose, which is far too slow to do on **every** request. So after a successful login, the server gives the user a **session token**: a long random string they send with each request instead.
+
+**Analogy:** at a festival you show your ID **once** at the gate, and get a **wristband**. After that, security just checks the wristband.
+
+```ts
+const token = randomBytes(32).toString("base64url");   // 43 random characters
+```
+
+- **32 random bytes** = 2²⁵⁶ possibilities. Guessing one is impossible.
+- **Stored as a hash, never as-is.** The `sessions` table holds `sha256(token)`. If someone steals a database backup, they get hashes, which can't be used to log in.
+- **Why is SHA-256 OK here but not for passwords?** Passwords are short and guessable, so they need a slow hash. Tokens are already completely random, so there's nothing to guess, and a fast hash is fine.
+- **Expires after 7 days.** The lookup checks `expires_at > now()`.
+- **Logout deletes the row**, so the token stops working **immediately**. This is the big advantage over JWTs.
+- **Each login is a separate session.** Logging out on your phone doesn't log out your laptop. Changing your password **does** delete all of them ("log out everywhere"), in case someone else had your password.
+
+**Every request now:**
+```
+Authorization: Bearer abc123…
+     │
+     ▼  requireUser middleware
+sha256("abc123…") → look up in sessions (JOIN users) → not expired?
+     │
+     ▼
+req.auth = { sessionId, userId, organizationId, role }   ← from the database, never from the client
+```
+
+### Part 3: login, revealing nothing to attackers
+
+**One error message for every failure:**
+
+```json
+{ "error": { "code": "INVALID_CREDENTIALS", "message": "Incorrect organization, email or password" } }
+```
+
+Wrong password, unknown email, unknown organization, a user from another organization, a user with no password yet: **all get exactly the same answer**. If the message said "no such email", attackers could test a list of emails to find real accounts. This is called **user enumeration**.
+
+**Equal timing too.** The message isn't the only clue: **response time** can leak information as well. A wrong password takes ~180 ms (hashing), but an unknown email could return in ~1 ms (no hash to check). So for unknown users we **hash against a dummy** anyway. I measured it:
+
+| | Wrong password | Unknown email |
+|---|---|---|
+| With the dummy hash | ~181 ms | ~181 ms ✅ |
+| Without it | ~181 ms | **~1 ms** ❌ (giveaway) |
+
+Timing is hard to test automatically, because results vary between runs and the test would be flaky, so this was **measured by hand** and documented here instead.
+
+**Emails are case-insensitive:** `Me@Example.com` and `me@example.com` log into the same account.
+
+**Security logging:** each failed login writes a line on the server: `Failed login: org=… reason=unknown_user ip=…`. The *real* reason is recorded for us (to spot attacks), but never sent to the client, and **the password is never logged**.
+
+### Part 4: the CLI script and hidden input
+
+```bash
+npm run user:set-password -- --org NMIT-Campus --email you@example.com
+New password: ••••••••••••   (nothing shows as you type)
+Repeat password:
+```
+
+**Why not pass the password as an argument** (`--password secret`)? Command lines are saved in **shell history** (`~/.zsh_history`) and visible to other programs on the machine while they run. A hidden prompt avoids both.
+
+How the hidden prompt works: the terminal is switched to **raw mode**, so key presses go to our program **without being displayed**. We collect characters until Enter, handle Backspace and Ctrl+C, then switch raw mode off again. The script refuses to run without a real terminal, rather than reading a password insecurely.
+
+The actual work (`setUserPassword`) lives in the auth service, so it's **tested like everything else**. The script is just a thin wrapper.
+
+### Part 5: the migration
+
+```sql
+CREATE TABLE "sessions" (...);
+ALTER TABLE "users" ADD COLUMN "password_hash" text;
+```
+
+**Is adding a column to a table with data safe?** Yes, when the column **allows NULL and has no default**. PostgreSQL just records "this column exists", existing rows read it as NULL, and nothing is rewritten. `NULL` here means "this user can't log in yet", which is exactly true for your existing user until they run the script.
+
+### Part 6: testing it, and breaking it on purpose
+
+Test users now get **real session tokens**. `createOrg()` logs each user in, so every ticket test goes through the real `requireUser` check:
+
+```ts
+request(app).get("/api/tickets").auth(a.resident.token, { type: "bearer" })
+```
+
+Test users **don't** get passwords by default. Hashing 6 passwords for every test would make the suite very slow. Only the login tests hash one.
+
+| Deliberate bug | Caught by |
+|---|---|
+| Expired sessions still accepted | "reject an expired session" |
+| Login error says *why* it failed | 5 "gives the same 401" tests |
+| Token stored as-is instead of hashed | "stores only a hash of the token" |
+| Logout doesn't delete the session | "ends the session so the token stops working" |
+| Password change doesn't log out other devices | "logs the user out everywhere" |
+| No dummy hash for unknown users | **No automated test.** Measured by hand (Part 3) |
+
+**Lesson:** not everything can be tested automatically. When a test would be unreliable, measure it, write down how, and keep the protection simple enough to check by reading.
+
+### Still to do (security)
+
+- **Rate limiting on login:** nothing yet stops an attacker trying thousands of passwords against one account. The slow hash helps, but a limit like "5 attempts per minute" is still needed. *(next)*
+- **Visibility rules:** residents still see all tickets in their organization. *(next)*
+- **Least-privilege database user:** the app still connects as `postgres`.
+- **Cleaning up expired sessions:** expired rows stay in the table (harmless, since they're rejected) until a background job deletes them.
+- **Cookies** for the browser frontend, with CSRF protection.
+
+---
+
 ## Glossary
 
 | Term | Simple meaning |
@@ -1438,3 +1601,15 @@ The "break it on purpose" results for the rules:
 | **Pessimistic locking** | Locking data before changing it so others must wait (`SELECT … FOR UPDATE`) |
 | **Row lock** | PostgreSQL blocking other changes to one row until a transaction finishes |
 | **Deterministic test** | A test that behaves the same way every run, never depending on luck or timing |
+| **Authentication** | Proving *who you are* (login) |
+| **Authorization** | Deciding *what you're allowed to do* (permissions) |
+| **Password hash** | A one-way scramble of a password; the password itself is never stored |
+| **Salt** | Random data mixed into each password before hashing, so equal passwords get different hashes |
+| **scrypt** | A deliberately slow, memory-hungry password-hashing algorithm |
+| **Session** | A server-side record that a user is logged in, identified by a random token |
+| **Bearer token** | A token sent as `Authorization: Bearer <token>`; whoever holds it is treated as logged in |
+| **User enumeration** | An attack that discovers which accounts exist from differences in error messages or timing |
+| **Timing attack** | Learning secrets from how long a server takes to respond |
+| **Constant-time comparison** | Comparing secrets in a way that takes the same time regardless of where they differ |
+| **Raw mode (terminal)** | A terminal mode where key presses go straight to the program without being shown |
+| **JWT** | JSON Web Token: a signed token the server can verify without a database lookup, but can't easily cancel |

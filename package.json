@@ -13,7 +13,8 @@
     "start": "node dist/server.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "user:set-password": "tsx src/scripts/set-password.ts"
   },
   "keywords": [],
   "author": "",

@@ -47,6 +47,8 @@ export const users = pgTable(
     name: varchar("name", { length: 120 }).notNull(),
     email: varchar("email", { length: 255 }).notNull(),
     role: varchar("role", { length: 20, enum: USER_ROLES }).notNull(),
+    // scrypt hash (see src/lib/passwords.ts). NULL means the user can't log in yet.
+    passwordHash: text("password_hash"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -184,6 +186,36 @@ export const ticketEvents = pgTable(
     ),
     // "Show the history of this ticket, oldest first"
     index("idx_ticket_events_ticket").on(t.organizationId, t.ticketId, t.createdAt),
+  ],
+);
+
+// One row per logged-in device. Only a SHA-256 hash of the token is stored,
+// so a leaked copy of this table can't be used to log in.
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id").notNull(),
+    userId: uuid("user_id").notNull(),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    foreignKey({
+      name: "sessions_organization_id_fkey",
+      columns: [t.organizationId],
+      foreignColumns: [organizations.id],
+    }),
+    foreignKey({
+      name: "sessions_user_id_organization_id_fkey",
+      columns: [t.userId, t.organizationId],
+      foreignColumns: [users.id, users.organizationId],
+    }),
+    // Every request looks a session up by its token hash.
+    unique("sessions_token_hash_key").on(t.tokenHash),
+    // "Log this user out everywhere"
+    index("idx_sessions_user").on(t.organizationId, t.userId),
   ],
 );
 

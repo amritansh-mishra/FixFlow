@@ -8,6 +8,7 @@ import {
   type NewTicket,
   type UserRole,
 } from "../src/db/schema.js";
+import { createSession } from "../src/modules/auth/auth.service.js";
 import { TEST_DB_NAME } from "./test-db.js";
 
 // Empty every table between tests so each test starts clean.
@@ -17,15 +18,17 @@ export async function resetDatabase() {
   if (rows[0]?.name !== TEST_DB_NAME) {
     throw new Error(`Refusing to reset database "${rows[0]?.name}"`);
   }
-  await db.execute(sql`TRUNCATE ticket_events, tickets, properties, users, organizations CASCADE`);
+  await db.execute(sql`TRUNCATE sessions, ticket_events, tickets, properties, users, organizations CASCADE`);
 }
 
+// Creates a user and logs them in, so tests can send `.auth(user.token, { type: "bearer" })`.
 async function createUser(organizationId: string, slug: string, name: string, role: UserRole) {
   const [user] = await db
     .insert(users)
     .values({ organizationId, name, email: `${name}@${slug}.test`, role })
     .returning();
-  return user!;
+  const { token } = await createSession(user!);
+  return { ...user!, token };
 }
 
 // Creates an organization with one property and a user for every role.

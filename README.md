@@ -17,11 +17,30 @@ npm test                  # run the tests (uses a separate fixflow_test database
 
 ## API
 
-All `/api` routes act as one user and are scoped to that user's organization. Until authentication is built, development requests identify the user with a temporary `X-User-Id` header (disabled in production). The organization and role are loaded from the database.
+### Authentication
+
+Log in with your organization's slug, email and password. The response contains a session token, valid for 7 days:
+
+```bash
+curl -X POST localhost:3000/api/auth/login -H "Content-Type: application/json" \
+  -d '{"organization":"my-org","email":"me@example.com","password":"…"}'
+# → { "data": { "token": "…", "expiresAt": "…", "user": { … } } }
+
+curl localhost:3000/api/tickets -H "Authorization: Bearer <token>"
+```
+
+Every other `/api` route needs that header and only sees data from the user's own organization. Passwords are set from the terminal (the prompt is hidden; it logs the user out everywhere):
+
+```bash
+npm run user:set-password -- --org <organization-slug> --email <email>
+```
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Service and database status |
+| `POST` | `/api/auth/login` | `{ organization, email, password }` → session token |
+| `POST` | `/api/auth/logout` | End the current session → 204 |
+| `GET` | `/api/auth/me` | The logged-in user |
 | `GET` | `/api/tickets?status=&limit=` | List the organization's tickets, newest first (`limit` 1–50, default 20) |
 | `GET` | `/api/tickets/:id` | One ticket (404 if it doesn't exist or belongs to another organization) |
 | `POST` | `/api/tickets` | Create a ticket: `{ propertyId, title, description?, priority? }` → 201 |

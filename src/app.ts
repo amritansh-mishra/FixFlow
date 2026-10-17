@@ -1,6 +1,7 @@
 import express from "express";
 import { pool } from "./db/index.js";
 import { errorHandler, notFoundHandler } from "./middleware/errors.js";
+import { authRouter } from "./modules/auth/auth.routes.js";
 import { ticketsRouter } from "./modules/tickets/tickets.routes.js";
 
 // Builds the Express app without starting a listener, so tests can import it.
@@ -26,6 +27,7 @@ export function createApp() {
     }
   });
 
+  app.use("/api/auth", authRouter);
   app.use("/api/tickets", ticketsRouter);
 
   app.use(notFoundHandler);

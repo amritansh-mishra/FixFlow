@@ -1,20 +1,15 @@
-// ⚠️ TEMPORARY: placeholder until real authentication exists (Phase 3).
+// Authentication: works out who is making the request from their session token.
 //
-// Reads the caller's user id from the X-User-Id header and loads that user
-// from the database. The organization and role come from the user's database
-// row, never from the request. But anyone can still claim to be any user by
-// sending their id, so this is disabled in production. Phase 3 replaces the
-// header with a verified login; the rest of the app keeps using req.auth.
+// Clients send the token they got from POST /api/auth/login in a header:
+//   Authorization: Bearer <token>
 
-import { eq } from "drizzle-orm";
 import type { RequestHandler } from "express";
-import { z } from "zod";
-import { isProduction } from "../config/env.js";
-import { db } from "../db/index.js";
-import { users, type UserRole } from "../db/schema.js";
+import type { UserRole } from "../db/schema.js";
+import { findSessionUser } from "../modules/auth/auth.service.js";
 import { HttpError } from "./errors.js";
 
 export interface AuthContext {
+  sessionId: string;
   userId: string;
   organizationId: string;
   role: UserRole;
@@ -29,28 +24,21 @@ declare global {
   }
 }
 
+const BEARER_RE = /^Bearer ([A-Za-z0-9_-]{20,200})$/i;
+
 export const requireUser: RequestHandler = async (req, _res, next) => {
-  if (isProduction) {
-    throw new HttpError(401, "UNAUTHENTICATED", "Authentication is not implemented yet");
-  }
-  const header = req.get("x-user-id");
-  if (!header) {
-    throw new HttpError(401, "UNAUTHENTICATED", "Missing X-User-Id header");
-  }
-  const parsed = z.uuid().safeParse(header);
-  if (!parsed.success) {
-    throw new HttpError(400, "VALIDATION_ERROR", "X-User-Id must be a UUID");
+  const match = BEARER_RE.exec(req.get("authorization") ?? "");
+  if (!match) {
+    throw new HttpError(401, "UNAUTHENTICATED", "Log in and send your token as 'Authorization: Bearer <token>'");
   }
 
-  const [user] = await db
-    .select({ id: users.id, organizationId: users.organizationId, role: users.role })
-    .from(users)
-    .where(eq(users.id, parsed.data));
-  if (!user) {
-    throw new HttpError(401, "UNAUTHENTICATED", "Unknown user");
+  const session = await findSessionUser(match[1]!);
+  // Same answer for unknown and expired tokens.
+  if (!session) {
+    throw new HttpError(401, "UNAUTHENTICATED", "Your session is invalid or has expired. Log in again.");
   }
 
-  req.auth = { userId: user.id, organizationId: user.organizationId, role: user.role };
+  req.auth = session;
   next();
 };
 
