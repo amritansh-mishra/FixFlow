@@ -1,0 +1,500 @@
+# FixFlow: Learning Notes
+
+My notes on the backend engineering concepts I learned while building FixFlow, in simple language. A new chapter is added after each step of the project.
+
+## Contents
+
+1. [Node.js versions and nvm](#1-nodejs-versions-and-nvm)
+2. [Environment variables and config validation](#2-environment-variables-and-config-validation)
+3. [Splitting the app from the server](#3-splitting-the-app-from-the-server)
+4. [Graceful shutdown](#4-graceful-shutdown)
+5. [Error handling and HTTP status codes](#5-error-handling-and-http-status-codes)
+6. [Database connection pools](#6-database-connection-pools)
+7. [TypeScript configuration](#7-typescript-configuration)
+8. [Security lessons so far](#8-security-lessons-so-far)
+9. [Database migrations](#9-database-migrations)
+10. [Indexes](#10-indexes)
+11. [Triggers: keeping `updated_at` correct](#11-triggers-keeping-updated_at-correct)
+12. [Transactions](#12-transactions)
+13. [How a migration runner works](#13-how-a-migration-runner-works)
+14. [Changing a real database safely](#14-changing-a-real-database-safely)
+15. [ORMs and Drizzle](#15-orms-and-drizzle)
+16. [Drizzle Kit and migrations](#16-drizzle-kit-and-migrations)
+17. [Git: commits, pushes and viewing diffs](#17-git-commits-pushes-and-viewing-diffs)
+18. [Glossary](#glossary)
+
+---
+
+## 1. Node.js versions and nvm
+
+**What:** Node.js has numbered versions. Even numbers (20, 22, 24) become **LTS** (Long-Term Support), meaning they get security fixes for years. Each version eventually reaches **end-of-life** and stops getting fixes.
+
+**What happened in FixFlow:** the project ran on Node 20, which reached end-of-life in April 2026. I upgraded to **Node 24 LTS**.
+
+**nvm** (Node Version Manager) lets one computer have several Node versions installed and switch between them.
+
+```bash
+nvm install 24        # download and install Node 24
+nvm alias default 24  # use 24 in every new terminal
+nvm use               # use the version written in this project's .nvmrc file
+```
+
+- **`.nvmrc`** is a file containing just `24`. It tells anyone working on the project which Node version to use.
+- **`"engines": { "node": ">=24" }`** in `package.json` documents the same requirement for tools and hosting platforms.
+- **`@types/node`** should match the Node version you run. Types for Node 26 would let you use features that don't exist in Node 24, so the code would type-check but crash when run.
+
+**Gotcha:** VS Code terminals inherit settings from VS Code itself. After changing the default Node version, quit and reopen VS Code completely.
+
+---
+
+## 2. Environment variables and config validation
+
+**What:** **environment variables** are settings given to a program from outside its code, such as the database password or the port number. They live in a `.env` file locally.
+
+**Why not write them in the code?** Secrets in code end up on GitHub, where anyone can read them. Settings also differ between your laptop and the production server.
+
+**Rules:**
+- `.env` holds the real values. It's listed in **`.gitignore`**, so Git never uploads it.
+- `.env.example` holds fake values. It is committed, so others know which settings are needed.
+
+**Config validation (`src/config/env.ts`):** instead of reading `process.env.X` all over the code, one file reads and **checks** every setting when the app starts.
+
+```ts
+function required(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`Missing required environment variable: ${name}`);
+  return value;
+}
+```
+
+- **Fail fast:** if `DATABASE_URL` is missing, the app refuses to start with a clear message. Without the check it would start, then fail later with a confusing error, or connect to the wrong database.
+- **Never print secrets in error messages.** The check says "DATABASE_URL is invalid" but never shows the URL, because it contains the password and error messages often end up in log files.
+- **Typed config:** `env.port` is a `number`. `process.env.PORT` is `string | undefined`.
+- `Object.freeze(...)` stops other code from changing the config while the app is running.
+
+Later we'll use **Zod**, a library that does this kind of checking for us.
+
+---
+
+## 3. Splitting the app from the server
+
+**Before:** one file built the Express app **and** started listening on a port.
+
+**After:**
+- `src/app.ts` contains `createApp()`, which builds the app (middleware and routes) and returns it.
+- `src/server.ts` calls `createApp()`, then `app.listen(port)`.
+
+**Why:** tests can call `createApp()` and send fake requests to it without starting a real server on a real port. This is a standard Express pattern.
+
+**Middleware order matters.** Express runs middleware in the order you add it:
+
+```ts
+app.use(express.json());      // 1. read JSON bodies
+app.get("/health", ...);      // 2. routes
+app.use(notFoundHandler);     // 3. nothing matched → 404
+app.use(errorHandler);        // 4. must be LAST, catches errors from everything above
+```
+
+---
+
+## 4. Graceful shutdown
+
+**Problem:** when the server is stopped (Ctrl+C, or Docker restarting it), it can be killed in the middle of handling a request, leaving half-finished work and open database connections.
+
+**Signals** are messages the operating system sends a program:
+- **SIGINT**: you pressed Ctrl+C
+- **SIGTERM**: Docker or a hosting platform says "please stop"
+
+```ts
+function shutdown(signal: string) {
+  server.close(async () => {   // stop accepting new requests, finish current ones
+    await pool.end();          // close database connections
+    process.exit(0);           // exit cleanly (0 = success)
+  });
+  setTimeout(() => process.exit(1), 10_000).unref();   // safety net: force exit after 10s
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+```
+
+**Analogy:** a shop at closing time locks the front door (no new customers), serves the people already inside, then turns off the lights.
+
+---
+
+## 5. Error handling and HTTP status codes
+
+### Status codes
+
+| Code | Meaning | When FixFlow uses it |
+|---|---|---|
+| 200 | OK | The request worked |
+| 201 | Created | A new ticket was created |
+| 400 | Bad Request | Client sent broken input (e.g. malformed JSON) |
+| 401 | Unauthorized | Not logged in |
+| 403 | Forbidden | Logged in, but not allowed |
+| 404 | Not Found | Route or ticket doesn't exist |
+| 413 | Payload Too Large | Request body bigger than 100kb |
+| 500 | Internal Server Error | A bug in our code |
+| 503 | Service Unavailable | Temporarily down (e.g. database unreachable) |
+
+**Rule of thumb:** 4xx means the client did something wrong, 5xx means the server did.
+
+### Central error handler (`src/middleware/errors.ts`)
+
+Without one, Express answers errors with an **HTML page that includes the full stack trace**, revealing file paths and libraries to anyone.
+
+Errors come in three kinds and are handled differently:
+
+1. **Expected errors** (ticket not found, not allowed): we throw them on purpose, and the message is safe to show.
+   ```ts
+   throw new HttpError(404, "TICKET_NOT_FOUND", "Ticket not found");
+   ```
+2. **Client mistakes** caught by Express (bad JSON, body too large): reply with a 4xx in general terms.
+3. **Bugs** (anything else): log full details on the server, tell the client only "An unexpected error occurred".
+
+**Consistent response shape**: every error looks the same, so the frontend can rely on it:
+
+```json
+{ "error": { "code": "TICKET_NOT_FOUND", "message": "Ticket not found" } }
+```
+
+**Express facts:**
+- An error handler is recognised by having **four parameters** `(err, req, res, next)`. Keep `_next` even if unused; the `_` tells TypeScript it's intentionally unused.
+- In **Express 5**, an error thrown inside an `async` route goes to the error handler automatically. Express 4 needed try/catch in every route.
+
+---
+
+## 6. Database connection pools
+
+**Problem:** opening a new connection to PostgreSQL is slow, because it involves a handshake and a login. Doing it for every request wastes time.
+
+**A pool** keeps a few connections open and lends them out: a request borrows one, uses it, and gives it back. **Analogy:** a bike-sharing station instead of buying a new bike for every trip.
+
+```ts
+export const pool = new Pool({
+  connectionString: env.databaseUrl,
+  max: 10,                          // at most 10 connections open at once
+  idleTimeoutMillis: 30_000,        // close a connection unused for 30 seconds
+  connectionTimeoutMillis: 5_000,   // give up connecting after 5 seconds
+});
+```
+
+`connectionTimeoutMillis` matters most. The default is **no timeout**, so if the database is down, requests hang forever instead of failing quickly.
+
+**Parameterized queries:** always pass user input separately from the SQL:
+
+```ts
+pool.query("SELECT * FROM tickets WHERE id = $1", [ticketId]);   // ✅ safe
+pool.query(`SELECT * FROM tickets WHERE id = '${ticketId}'`);    // ❌ SQL injection!
+```
+
+---
+
+## 7. TypeScript configuration
+
+`tsconfig.json` tells the TypeScript compiler how to check and build the code.
+
+| Setting | Meaning |
+|---|---|
+| `"rootDir": "./src"`, `"outDir": "./dist"` | Read `.ts` from `src/`, write compiled `.js` to `dist/` |
+| `"module": "nodenext"` | Use Node's modern module system (`import`/`export`) |
+| `"types": ["node"]` | Load Node's types, so `process`, `Buffer` etc. are known |
+| `"strict": true` | Turn on all the important safety checks |
+| `"noUncheckedIndexedAccess"` | `rows[0]` might be `undefined`, so you must check |
+| `"noUnusedLocals"` / `"noUnusedParameters"` | Flag leftover unused code |
+| `"include": ["src"]` | Only compile files in `src/` |
+
+Settings removed from FixFlow: `"jsx"` (only for React, not a backend) and `"declaration"` (only for libraries other people install).
+
+**Scripts in `package.json`:**
+
+```bash
+npm run dev        # run with auto-reload while coding (tsx)
+npm run typecheck  # check types without building
+npm run build      # compile to dist/ (deletes old dist first)
+npm start          # run the compiled code (production)
+```
+
+---
+
+## 8. Security lessons so far
+
+1. **Don't leak error details to clients.** The old `/health` returned raw database errors, which can include hostnames and usernames. Log details on the server and send clients something generic.
+2. **Don't advertise your stack.** Express adds an `X-Powered-By: Express` header by default. `app.disable("x-powered-by")` removes it.
+3. **Limit request body size** (`express.json({ limit: "100kb" })`), so nobody can send a giant body to slow the server down.
+4. **Never print secrets**, in logs, error messages, or commands.
+5. **Least privilege:** the app shouldn't connect as `postgres` (a superuser that can do anything). A dedicated user that can only read and write FixFlow's tables limits the damage if something goes wrong. *(Still to do.)*
+6. **Never trust a user-supplied `organization_id`.** The user's organization must come from their verified login, not from the request. *(Coming in Phase 3.)*
+
+---
+
+## 9. Database migrations
+
+**Problem:** I created the tables by typing SQL directly into PostgreSQL, so the database structure existed **only inside the database**. If the laptop died or someone cloned the repo, nobody could rebuild it.
+
+**A migration** is a SQL file in the project that describes **one change** to the database. Run them in order on an empty database and you get the exact current structure, on any machine.
+
+**Analogy:** save points in a video game.
+
+```
+db/migrations/
+  0000_baseline.sql                      → create the 4 tables
+  0001_tickets_indexes_and_updated_at.sql → add indexes and auto-timestamp
+  0002_...                               → future changes
+```
+
+**The baseline** is the starting point: the schema as it already existed. Every constraint has a **name** (e.g. `users_organization_id_email_key`). Postgres invents one if you don't choose, so the baseline spells out the exact same names to make it **identical** to the real database.
+
+**The golden rule:** never edit a migration that has already run. Add a new one instead. The database already ran the old version, so editing the file doesn't change the database; it just makes the file wrong.
+
+---
+
+## 10. Indexes
+
+**Analogy:** the index at the back of a textbook. Without it, finding "plumbing" means reading every page. With it, you jump straight to page 214.
+
+```sql
+CREATE INDEX idx_tickets_org_status ON tickets (organization_id, status);
+```
+
+This keeps a sorted list of tickets by organization, then status, so *"show open tickets in Sunrise Hostel"* finds them instantly instead of scanning every ticket.
+
+- **Why each FixFlow index starts with `organization_id`:** FixFlow is **multi-tenant** (one app shared by many organizations), and every query is scoped to one organization.
+- **Cost:** indexes take space and make inserts slightly slower, because the sorted list must be updated too. Add them for queries you actually run often.
+- `PRIMARY KEY` and `UNIQUE` constraints create indexes automatically.
+
+**Lesson from the audit:** the 3 `CREATE INDEX` commands were written but **never actually ran**. Always verify what's really in the database.
+
+---
+
+## 11. Triggers: keeping `updated_at` correct
+
+**Problem:** `updated_at TIMESTAMPTZ DEFAULT NOW()` only sets the time **when a row is created**. Updating the ticket later leaves the old time.
+
+**A trigger** is an automatic action the database runs when something happens. **Analogy:** a light that switches on when you open the door.
+
+```sql
+CREATE FUNCTION set_updated_at() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    NEW.updated_at := now();   -- NEW = the row as it's about to be saved
+    RETURN NEW;                -- continue saving it
+END;
+$$;
+
+CREATE TRIGGER tickets_set_updated_at
+    BEFORE UPDATE ON tickets      -- just before a ticket is updated...
+    FOR EACH ROW                  -- ...for every changed row...
+    EXECUTE FUNCTION set_updated_at();   -- ...run the function
+```
+
+**Why in the database and not the API code?** The database enforces it for **every** update, from any code, script, or manual SQL. Nobody can forget it.
+
+---
+
+## 12. Transactions
+
+**A transaction** groups several SQL statements so they **all succeed or all fail together**.
+
+**Analogy:** a bank transfer. Money leaves account A *and* arrives in account B. You never want only half of that to happen.
+
+```sql
+BEGIN;      -- start a draft
+  ...statements...
+COMMIT;     -- make the draft permanent
+-- or
+ROLLBACK;   -- throw the draft away, as if nothing happened
+```
+
+PostgreSQL can even undo `CREATE TABLE` and `CREATE INDEX` inside a transaction. Many databases can't, so this is a nice Postgres feature.
+
+**Read-only transactions** (`BEGIN READ ONLY`) guarantee a script can only look and never change anything. I used them to inspect the real database safely.
+
+---
+
+## 13. How a migration runner works
+
+`src/db/migrate.ts` runs migration files. Command: `npm run db:migrate`.
+
+1. **Logbook table.** It keeps a `schema_migrations` table listing which files already ran. Files already listed are skipped, so running it twice is safe.
+2. **Transactions.** Each file runs inside `BEGIN … COMMIT`. If it fails, `ROLLBACK`, so the database is never half-changed.
+3. **Baseline handling.** If the tables already exist (a hand-made database), it records `0000_baseline.sql` as done **without running it**, because running it would fail with "table already exists". On an empty database it runs normally.
+4. **Checksums (fingerprints).** A **checksum** (SHA-256) is a fingerprint of a file's contents: change one character and the fingerprint is completely different. The runner stores each file's fingerprint and refuses to continue if an applied file was edited.
+5. **Dry run.** `npm run db:migrate -- --dry-run` shows what *would* happen without changing anything.
+6. **Advisory lock.** `pg_advisory_lock` works like a bathroom door lock. If two copies of the runner start at once, the second waits instead of both running the same migration.
+
+Real tools (Drizzle Kit, Flyway, Prisma Migrate) work the same way underneath.
+
+---
+
+## 14. Changing a real database safely
+
+The workflow used in FixFlow:
+
+1. **Test on a copy.** Create a throwaway database (`fixflow_scratch_...`), run the changes there, and test every situation.
+2. **Prove it's correct.** E.g. build a database from the baseline, export its structure with `pg_dump --schema-only`, and compare it line by line with the real one.
+3. **Delete the throwaway databases.**
+4. **Rehearse on the real database** with `--dry-run` and read the output.
+5. **Apply for real.**
+6. **Verify:** check that the changes exist and the data is untouched (row counts are the same).
+
+Never experiment directly on a database with data you care about.
+
+---
+
+## 15. ORMs and Drizzle
+
+### The problem with raw SQL in TypeScript
+
+```ts
+const result = await pool.query("SELECT * FROM tickets WHERE status = $1", ["open"]);
+result.rows[0].titel;   // typo! TypeScript can't catch it, the SQL is just a string
+```
+
+TypeScript can't see inside SQL strings. Results are typed `any`, and typos or renamed columns only break when the app runs.
+
+### What an ORM is
+
+**ORM = Object-Relational Mapper:** a translator between TypeScript and the database. You describe tables in TypeScript once, write queries with TypeScript functions, and get **typed** results back. Bugs get a red underline in VS Code before running anything.
+
+### Why Drizzle
+
+ORMs come in two styles:
+- **"Hide the SQL"** (Prisma, TypeORM): you learn the ORM's own language.
+- **"SQL, but typed"** (Drizzle): code looks almost exactly like SQL.
+
+Drizzle suits learning, because every query maps directly to SQL you recognise.
+
+### Describing a table (schema)
+
+```ts
+export const tickets = pgTable("tickets", {
+  id:             uuid("id").primaryKey().defaultRandom(),
+  organizationId: uuid("organization_id").notNull(),
+  assignedTo:     uuid("assigned_to"),                          // nullable
+  title:          varchar("title", { length: 200 }).notNull(),
+  status:         varchar("status", { length: 20 }).notNull().default("open"),
+  createdAt:      timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+```
+
+`organizationId: uuid("organization_id")`: the quoted name is the **database column** (snake_case), and the name on the left is what you use **in TypeScript** (camelCase).
+
+### Types for free
+
+```ts
+type Ticket = typeof tickets.$inferSelect;     // a ticket read from the database
+type NewTicket = typeof tickets.$inferInsert;  // what you need to insert one
+```
+
+Drizzle works these out from the schema. You never write them by hand.
+
+### Queries
+
+```ts
+// SELECT * FROM tickets WHERE organization_id = $1 AND status = $2
+// ORDER BY created_at DESC LIMIT 50
+const rows = await db.select().from(tickets)
+  .where(and(eq(tickets.organizationId, orgId), eq(tickets.status, "open")))
+  .orderBy(desc(tickets.createdAt))
+  .limit(50);
+
+// INSERT ... RETURNING *
+const [ticket] = await db.insert(tickets).values({ ... }).returning();
+
+// UPDATE tickets SET status = $1 WHERE id = $2 AND organization_id = $3
+await db.update(tickets).set({ status: "in_progress" })
+  .where(and(eq(tickets.id, id), eq(tickets.organizationId, orgId)));
+```
+
+Drizzle always sends values separately from the SQL, so it **protects against SQL injection** by default.
+
+---
+
+## 16. Drizzle Kit and migrations
+
+**Drizzle Kit** is Drizzle's command-line tool. It does what our migration runner does, plus it **writes the migration SQL for you**.
+
+### Workflow
+
+1. Edit `schema.ts` (e.g. add a column).
+2. `drizzle-kit generate`: Drizzle compares the schema with its last saved **snapshot** and writes a new SQL file.
+3. **Read the SQL yourself.** Always.
+4. `drizzle-kit migrate`: runs pending files and records them in its logbook table.
+
+**Snapshots** are saved copies of what the schema looked like last time (in `drizzle/meta/`). Comparing the new schema with the last snapshot is how Drizzle knows what changed.
+
+### The commands
+
+| Command | What it does | Safe? |
+|---|---|---|
+| `generate` | Writes a new migration file. Doesn't touch the database | ✅ |
+| `migrate` | Runs pending migration files | ✅ if you reviewed the SQL |
+| `pull` | Reads an existing database and writes `schema.ts` for you (introspection) | ✅ read-only |
+| `push` | Changes the live database to match `schema.ts` directly, with no file and no review | ⚠️ dangerous |
+| `studio` | A web page for browsing tables and data | ✅ for viewing |
+
+### Why `push` is dangerous
+
+- **No record:** no file, no history, can't be repeated elsewhere.
+- **No review:** the SQL runs immediately.
+- **Can delete data:** renaming a column might be treated as "drop old column, add new one", and all its data is gone.
+
+Fine for throwaway experiments, **never** on a database with real data.
+
+### What Drizzle doesn't understand
+
+Triggers, functions, and some advanced Postgres features. For those, write a **custom migration** (`drizzle-kit generate --custom`) by hand.
+
+### Rule: one migration system only
+
+Drizzle Kit has its own logbook. Running two migration systems side by side means two logbooks that each think they're in charge. Pick one.
+
+---
+
+## 17. Git: commits, pushes and viewing diffs
+
+- **Commit:** saves a snapshot of your changes in local Git history, with a message explaining *what* changed and *why*.
+- **Push:** uploads your commits to GitHub (backup, plus it's visible on your portfolio).
+- **Small, focused commits** tell the story of the project: one commit per meaningful step.
+
+```bash
+git status          # what changed?
+git add <files>     # choose what goes in the next commit
+git commit -m "..." # save the snapshot
+git push            # upload to GitHub
+git log --oneline   # see history
+```
+
+### Viewing changes in VS Code
+- **Uncommitted changes:** Source Control panel (Ctrl+Shift+G), then click a file. Red is removed, green is added.
+- **A past commit:** open a file, then the **Timeline** section in the Explorer sidebar, then click a commit.
+- **Command line:** `code --diff old-file new-file` opens a side-by-side diff.
+
+---
+
+## Glossary
+
+| Term | Simple meaning |
+|---|---|
+| **API** | A way for programs to talk to each other. FixFlow's API lets the frontend ask the backend for tickets |
+| **REST** | A style of API using URLs and HTTP methods (`GET` read, `POST` create, `PATCH` update, `DELETE` remove) |
+| **Endpoint / route** | One URL plus method the API answers, e.g. `GET /api/tickets` |
+| **Middleware** | A function every request passes through, like a security checkpoint |
+| **Schema** | The structure of the database: tables, columns, rules |
+| **Constraint** | A rule the database enforces, e.g. `NOT NULL`, `UNIQUE`, `CHECK`, foreign key |
+| **Primary key** | The column that uniquely identifies each row (`id`) |
+| **Foreign key** | A column pointing to a row in another table (a ticket's `property_id`) |
+| **Composite foreign key** | A foreign key using two columns, e.g. `(property_id, organization_id)`, so a ticket can't point to another organization's property |
+| **Multi-tenant** | One app serving many separate organizations (tenants), whose data must never mix |
+| **Migration** | A SQL file describing one change to the database structure |
+| **Baseline** | The first migration, describing the schema as it already existed |
+| **Index** | A sorted lookup list that makes queries fast |
+| **Trigger** | An automatic action the database runs when data changes |
+| **Transaction** | A group of statements that all succeed or all fail |
+| **Checksum** | A fingerprint of a file's contents |
+| **Connection pool** | A set of reusable open database connections |
+| **ORM** | A translator between code and the database |
+| **Introspection** | Reading an existing database to find out its structure |
+| **SQL injection** | An attack where user input is run as SQL. Prevented by parameterized queries |
+| **Superuser** | A database user that can do anything. Apps shouldn't use one |
+| **LTS** | Long-Term Support: a software version that gets fixes for years |
+| **Environment variable** | A setting given to a program from outside its code |
