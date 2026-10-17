@@ -31,7 +31,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 25. [Login rate limiting and ticket visibility](#25-login-rate-limiting-and-ticket-visibility)
 26. [A least-privilege database user](#26-a-least-privilege-database-user)
 27. [Deploying to Render](#27-deploying-to-render)
-28. [Glossary](#glossary)
+28. [Comments, search, pagination, stats, API docs and CI](#28-comments-search-pagination-stats-api-docs-and-ci)
+29. [Glossary](#glossary)
 
 ---
 
@@ -1884,6 +1885,88 @@ A local **simulation** of Render:
 
 ---
 
+## 28. Comments, search, pagination, stats, API docs and CI
+
+Four features added before deploying, chosen because a hiring manager notices them quickly. Each was its own tested commit.
+
+### 1. Ticket comments
+
+`GET/POST /api/tickets/:id/comments`, so people can talk on a ticket: *"Part ordered, fixing it Thursday."*
+
+- **New table `ticket_comments`** (migration `0005`), with the same safety patterns as before: composite foreign keys so a comment can't point at another organization's ticket or user, and a `CHECK` that the body is 1–2000 characters.
+- **Same visibility as tickets:** if you can't see the ticket, its comments return 404, and you can't post either.
+- **Append-only:** the app's database role may `SELECT` and `INSERT` comments, never `UPDATE` or `DELETE` them. The permission tests prove it.
+- **Each comment also adds a `commented` row to the ticket history**, in the same transaction. The history table's allowed types had to change. The migration **drops and re-adds** the `CHECK` rule, which is safe because the whole migration runs in one transaction, so the rule is never missing.
+- **The grant is guarded:** `IF EXISTS (role) THEN GRANT …`, so it's skipped on hosts without the `fixflow_app` role (chapter 27).
+- **The response includes the author's name and role** (a `JOIN` on `users`), so a frontend can show "Ravi (technician)" without a second request.
+
+### 2. Search, filters and cursor pagination
+
+```
+GET /api/tickets?priority=urgent&propertyId=…&q=leak&limit=20&cursor=<id>
+→ { "data": [...], "nextCursor": "…" }   // null on the last page
+```
+
+**Text search** uses `ILIKE '%leak%'` (case-insensitive) on title and description. User text is **escaped**: in `LIKE`, `%` means "anything" and `_` means "any one character", so a search for `100%` must not match `100 percent`. `\` escapes them.
+
+**Why cursor pagination instead of page numbers?** With `?page=3` (`OFFSET 40`), if a new ticket arrives while you're reading, everything shifts by one and you see a ticket twice. A **cursor** says "continue after *this* ticket", which stays correct when data changes, and it's also faster on big tables.
+
+**The precision trap ⭐.** The obvious implementation passes the last ticket's `createdAt` back to the database. But:
+- PostgreSQL stores timestamps to the **microsecond** (`12:00:00.123456`).
+- JavaScript `Date` keeps only **milliseconds** (`12:00:00.123`).
+
+Round-tripping through JavaScript cuts off the last digits, and pagination silently repeats or skips tickets created within the same millisecond. **The fix:** the cursor is the ticket's **id**, and PostgreSQL compares against the ticket's *stored* values:
+
+```sql
+WHERE (created_at, id) < (SELECT created_at, id FROM tickets WHERE id = $cursor)
+```
+
+`(a, b) < (x, y)` is a **row comparison**: compare `a` with `x`, and if they're equal compare `b` with `y`. That matches `ORDER BY created_at DESC, id DESC` exactly, ties included.
+
+**Proved by breaking it:** with the JavaScript-timestamp version, the test with three tickets 100 microseconds apart **failed**.
+
+The query fetches **one extra row** to know whether another page exists, without a separate `COUNT`.
+
+### 3. Manager statistics: `GET /api/stats`
+
+```json
+{ "total": 5, "byStatus": {...}, "byPriority": {...},
+  "averageResolutionHours": 3, "resolvedTickets": 2,
+  "technicians": [{ "name": "Ravi", "active": 2, "completed": 0 }] }
+```
+
+The database does the maths with **aggregate functions**, instead of loading every ticket into JavaScript:
+- `GROUP BY status` with `count(*)` gives counts per status.
+- `count(*) FILTER (WHERE status IN (...))` gives several different counts in **one pass**.
+- `avg(extract(epoch FROM resolved_at - created_at)) / 3600` gives the average hours to the **first** resolution, from the history table.
+- A `LEFT JOIN` keeps technicians with **zero** tickets in the list. A plain `JOIN` would drop them.
+
+The four queries run **at the same time** with `Promise.all`. Statuses with no tickets are filled in as `0`, so the response always has the same shape.
+
+### 4. Interactive API docs: `/docs`
+
+- **OpenAPI** is a standard format for describing a REST API (endpoints, inputs, outputs, errors) as JSON. **Swagger UI** turns it into a web page where you can **try every endpoint**: log in, click **Authorize**, paste the token, and the page sends real requests.
+- **Generated from the same Zod schemas** the API validates with (`z.toJSONSchema`), so the docs say "title: 1–200 characters" because the validation does. **One source of truth, no drift.**
+- **Tested:** every documented endpoint is requested, and the test fails if the app answers "route not found". It caught a fake endpoint added on purpose.
+- **Linted** with Redocly's recommended rules: valid. Each operation got an `operationId`, a unique name that tools use to generate client code.
+- `GET /` builds its endpoint list **from the OpenAPI document**, another single source.
+- Swagger UI loads from a CDN at a **pinned version** (`5.33.0`), so there's no extra npm package, and an upstream update can't change it unexpectedly.
+
+### 5. GitHub Actions CI
+
+**CI (continuous integration)** means every push is checked automatically on a clean machine. `.github/workflows/ci.yml`:
+
+1. Starts a **throwaway PostgreSQL** (`services: postgres`), with a health check so tests wait until it's ready.
+2. Installs dependencies with **`npm ci`**: an exact install from `package-lock.json`, which fails if the lockfile is out of date.
+3. Creates the restricted `fixflow_app` role.
+4. Runs `typecheck`, all **196 tests** (as the restricted role, so the permission tests run too), and `build`.
+
+The **badge** at the top of the README shows green or red for the latest run. It's the first thing a reviewer sees.
+
+**Why it matters:** "it works on my machine" isn't proof. CI proves the project builds and passes from a clean checkout, on every change.
+
+---
+
 ## Glossary
 
 | Term | Simple meaning |
@@ -1979,3 +2062,10 @@ A local **simulation** of Render:
 | **Idempotent** | Safe to run more than once; repeating it changes nothing further |
 | **Seed data** | Initial data loaded into a database, e.g. demo accounts |
 | **Cold start** | The delay when a sleeping server has to start up before answering the first request |
+| **Cursor pagination** | Fetching the next page "after this item" instead of by page number; stays correct while data changes |
+| **Row comparison** | SQL `(a, b) < (x, y)`: compares `a` to `x`, and only if equal compares `b` to `y` |
+| **Aggregate function** | SQL functions that summarize many rows: `count`, `avg`, `sum`, `min`, `max` |
+| **OpenAPI** | A standard JSON/YAML format describing a REST API's endpoints, inputs and outputs |
+| **Swagger UI** | A web page generated from an OpenAPI document that lets you try the API in the browser |
+| **CI (continuous integration)** | Automatically building and testing every change on a clean machine |
+| **GitHub Actions** | GitHub's built-in service for running CI workflows |

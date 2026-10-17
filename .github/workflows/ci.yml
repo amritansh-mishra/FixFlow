@@ -1,0 +1,52 @@
+# Runs on every push to main and every pull request: type-check, the full test
+# suite against a real PostgreSQL, and a production build.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # A throwaway PostgreSQL server for this run only.
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    # Same two connections as local development: the owner (for test setup and
+    # migrations) and the restricted app role (what the app under test uses).
+    # These passwords only exist inside this temporary CI database.
+    env:
+      DATABASE_ADMIN_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      DATABASE_URL: postgresql://fixflow_app:ci-app-password@localhost:5432/fixflow_test
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      # Migration 0004 grants permissions to this role; here we also let it log in.
+      - name: Create the restricted app role
+        run: psql "$DATABASE_ADMIN_URL" -c "CREATE ROLE fixflow_app LOGIN PASSWORD 'ci-app-password'"
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - run: npm run build

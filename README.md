@@ -1,10 +1,13 @@
 # FixFlow
 
+[![CI](https://github.com/amritansh-mishra/FixFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/amritansh-mishra/FixFlow/actions/workflows/ci.yml)
+
 A multi-tenant REST API for maintenance and work-order management. FixFlow replaces scattered WhatsApp messages, calls and spreadsheets with a structured workflow for apartment complexes, hostels, offices and college campuses.
 
 A resident reports a leaking tap, a manager assigns a technician, the technician updates progress, and the resident confirms the fix. Every step is recorded.
 
-**Live API:** `https://<your-service>.onrender.com` (free tier: the first request after a while can take ~1 minute while the server wakes up)
+**Live API:** `https://<your-service>.onrender.com` · **Interactive docs:** `https://<your-service>.onrender.com/docs`
+(free tier: the first request after a while can take ~1 minute while the server wakes up)
 
 ## Highlights
 
@@ -15,9 +18,12 @@ A resident reports a leaking tap, a manager assigns a technician, the technician
 - **Audit history:** an append-only event log for every ticket, written in the same transaction as each change.
 - **Concurrency-safe updates:** optimistic concurrency returns `409 CONFLICT` instead of losing a simultaneous change.
 - **Least-privilege database role:** the app's database user can't alter tables or rewrite history.
-- **155 automated tests** (Vitest + Supertest) against a real PostgreSQL database, including a deterministic race-condition test.
+- **Comments, search and pagination:** ticket discussions, text search with filters, and cursor pagination that stays exact down to the microsecond.
+- **Manager dashboard data:** tickets by status and priority, average resolution time, and technician workload, computed with SQL aggregates.
+- **Interactive API docs:** OpenAPI 3.1 generated from the same Zod schemas used for validation, with Swagger UI at `/docs`.
+- **196 automated tests** (Vitest + Supertest) against a real PostgreSQL database, including a deterministic race-condition test. They run in **GitHub Actions CI** on every push.
 
-**Tech stack:** TypeScript, Node.js 24, Express 5, PostgreSQL, Drizzle ORM, Zod, Vitest. Deployed on Render.
+**Tech stack:** TypeScript, Node.js 24, Express 5, PostgreSQL, Drizzle ORM, Zod, Vitest, OpenAPI/Swagger, GitHub Actions. Deployed on Render.
 
 ## Try the demo
 
@@ -97,12 +103,15 @@ npm run user:set-password -- --org <organization-slug> --email <email>
 | `POST` | `/api/auth/logout` | End the current session → 204 |
 | `GET` | `/api/auth/me` | The logged-in user |
 | `GET` | `/api/properties` | The organization's properties (needed to create tickets) |
-| `GET` | `/api/tickets?status=&limit=` | List the organization's tickets, newest first (`limit` 1–50, default 20) |
+| `GET` | `/api/stats` | Ticket statistics and technician workload (managers and admins) |
+| `GET` | `/api/tickets?status=&priority=&propertyId=&q=&limit=&cursor=` | List visible tickets, newest first. `q` searches title and description; pass `nextCursor` as `cursor` for the next page (`limit` 1–50, default 20) |
 | `GET` | `/api/tickets/:id` | One ticket (404 if it doesn't exist or belongs to another organization) |
 | `POST` | `/api/tickets` | Create a ticket: `{ propertyId, title, description?, priority? }` → 201 |
 | `PATCH` | `/api/tickets/:id/assign` | Assign to a technician: `{ technicianId }` (managers and admins) |
 | `PATCH` | `/api/tickets/:id/status` | Change status: `{ status }` (see workflow below) |
 | `GET` | `/api/tickets/:id/history` | Everything that happened to the ticket, oldest first |
+| `GET` | `/api/tickets/:id/comments` | The ticket's comments, with author name and role |
+| `POST` | `/api/tickets/:id/comments` | Add a comment: `{ body }` |
 
 ### Ticket workflow
 
