@@ -15,6 +15,13 @@
       "when": 1792234498527,
       "tag": "0001_updated_at_trigger",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792251798157,
+      "tag": "0002_ticket_events",
+      "breakpoints": true
     }
   ]
 }

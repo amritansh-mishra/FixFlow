@@ -21,9 +21,12 @@ export const USER_ROLES = ["resident", "technician", "manager", "admin"] as cons
 export const TICKET_PRIORITIES = ["low", "medium", "high", "urgent"] as const;
 export const TICKET_STATUSES = ["open", "assigned", "in_progress", "resolved", "closed"] as const;
 
+export const TICKET_EVENT_TYPES = ["created", "assigned", "status_changed"] as const;
+
 export type UserRole = (typeof USER_ROLES)[number];
 export type TicketPriority = (typeof TICKET_PRIORITIES)[number];
 export type TicketStatus = (typeof TICKET_STATUSES)[number];
+export type TicketEventType = (typeof TICKET_EVENT_TYPES)[number];
 
 export const organizations = pgTable(
   "organizations",
@@ -131,8 +134,62 @@ export const tickets = pgTable(
   ],
 );
 
+// Append-only history: one row per thing that happened to a ticket.
+// Rows are only ever inserted, never updated or deleted.
+export const ticketEvents = pgTable(
+  "ticket_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id").notNull(),
+    ticketId: uuid("ticket_id").notNull(),
+    // The user who did it.
+    actorId: uuid("actor_id").notNull(),
+    type: varchar("type", { length: 20, enum: TICKET_EVENT_TYPES }).notNull(),
+    fromStatus: varchar("from_status", { length: 20, enum: TICKET_STATUSES }),
+    toStatus: varchar("to_status", { length: 20, enum: TICKET_STATUSES }),
+    // Set on 'assigned' events: the technician the ticket was assigned to.
+    assignedTo: uuid("assigned_to"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      name: "ticket_events_organization_id_fkey",
+      columns: [t.organizationId],
+      foreignColumns: [organizations.id],
+    }),
+    // Same-organization guarantees, like on tickets.
+    foreignKey({
+      name: "ticket_events_ticket_id_organization_id_fkey",
+      columns: [t.ticketId, t.organizationId],
+      foreignColumns: [tickets.id, tickets.organizationId],
+    }),
+    foreignKey({
+      name: "ticket_events_actor_id_organization_id_fkey",
+      columns: [t.actorId, t.organizationId],
+      foreignColumns: [users.id, users.organizationId],
+    }),
+    foreignKey({
+      name: "ticket_events_assigned_to_organization_id_fkey",
+      columns: [t.assignedTo, t.organizationId],
+      foreignColumns: [users.id, users.organizationId],
+    }),
+    check("ticket_events_type_check", sql`${t.type} IN ('created', 'assigned', 'status_changed')`),
+    check(
+      "ticket_events_from_status_check",
+      sql`${t.fromStatus} IN ('open', 'assigned', 'in_progress', 'resolved', 'closed')`,
+    ),
+    check(
+      "ticket_events_to_status_check",
+      sql`${t.toStatus} IN ('open', 'assigned', 'in_progress', 'resolved', 'closed')`,
+    ),
+    // "Show the history of this ticket, oldest first"
+    index("idx_ticket_events_ticket").on(t.organizationId, t.ticketId, t.createdAt),
+  ],
+);
+
 export type Organization = typeof organizations.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type Property = typeof properties.$inferSelect;
 export type Ticket = typeof tickets.$inferSelect;
 export type NewTicket = typeof tickets.$inferInsert;
+export type TicketEvent = typeof ticketEvents.$inferSelect;

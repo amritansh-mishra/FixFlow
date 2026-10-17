@@ -27,3 +27,13 @@ export const createTicketBody = z.strictObject({
 });
 
 export type CreateTicketBody = z.infer<typeof createTicketBody>;
+
+// PATCH /api/tickets/:id/assign
+export const assignTicketBody = z.strictObject({
+  technicianId: z.uuid(),
+});
+
+// PATCH /api/tickets/:id/status
+export const changeStatusBody = z.strictObject({
+  status: z.enum(TICKET_STATUSES),
+});

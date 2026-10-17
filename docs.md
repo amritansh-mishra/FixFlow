@@ -26,7 +26,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 20. [The first endpoint: GET /api/tickets](#20-the-first-endpoint-get-apitickets)
 21. [Automated tests](#21-automated-tests)
 22. [Validation with Zod, GET one ticket, create a ticket](#22-validation-with-zod-get-one-ticket-create-a-ticket)
-23. [Glossary](#glossary)
+23. [Assignment, status workflow, history and race conditions](#23-assignment-status-workflow-history-and-race-conditions)
+24. [Glossary](#glossary)
 
 ---
 
@@ -1193,6 +1194,190 @@ Two test techniques worth noticing:
 
 ---
 
+## 23. Assignment, status workflow, history and race conditions
+
+### What was added
+
+```
+PATCH /api/tickets/:id/assign    { technicianId }   → manager assigns a technician
+PATCH /api/tickets/:id/status    { status }         → move the ticket along the workflow
+GET   /api/tickets/:id/history                      → everything that happened, oldest first
+```
+
+Plus a new database table (`ticket_events`), a permissions file (`tickets.policy.ts`), and 51 new tests (80 in total).
+
+### Part 1: the workflow is a state machine
+
+A ticket is always in **exactly one status**, and can only move along certain arrows:
+
+```
+open ──assign──▶ assigned ──start──▶ in_progress ──resolve──▶ resolved ──close──▶ closed
+                 (reassign ok)                         ▲                │
+                                                       └────reopen──────┘
+```
+
+This is called a **state machine**: a fixed set of states plus the allowed moves between them. **Analogy:** a traffic light can go green → yellow → red → green, but never green → red directly.
+
+Without it, anyone could set any status: a ticket could jump from `open` straight to `closed` without anyone doing the work, or a `closed` ticket could be changed again.
+
+### Part 2: the rules live in one file (`tickets.policy.ts`)
+
+```ts
+const TRANSITIONS = {
+  assigned:    { in_progress: isAssignee },
+  in_progress: { resolved: isAssignee },
+  resolved:    { closed: isCreatorOrManager, in_progress: isCreatorOrManager },
+};
+```
+
+Read it as: *"from `assigned` you may go to `in_progress`, if you're the assignee"*. **If a move isn't in the table, it's not allowed for anyone.**
+
+The rules are tiny functions:
+
+```ts
+const isManager = (auth) => auth.role === "manager" || auth.role === "admin";
+const isAssignee = (auth, ticket) => ticket.assignedTo === auth.userId;
+const isCreatorOrManager = (auth, ticket) => ticket.createdBy === auth.userId || isManager(auth);
+```
+
+**Why a separate file?**
+- **All the "who can do what" rules are in one place.** To change a rule (e.g. "technicians can close tickets too"), you edit one line.
+- **They're pure functions:** given the same input, always the same answer, with no database and no HTTP. That makes them easy to understand and **easy to test**.
+- Separating the *decision* (policy) from the *action* (service) is a common pattern called a **policy** or **authorization layer**.
+
+### Part 3: 409, 403, 404, 400, choosing the right error
+
+When a status change fails, the **reason** decides the code:
+
+| Situation | Code | Example |
+|---|---|---|
+| Ticket doesn't exist or is in another organization | **404** | Hostel A asks about Hostel B's ticket |
+| Body is malformed | **400** | `{ "status": "done" }`, which isn't a real status |
+| That move doesn't exist in the state machine | **409** `INVALID_TRANSITION` | `open → resolved` |
+| The move exists, but **you** may not make it | **403** `FORBIDDEN` | A resident tries `assigned → in_progress` |
+| Someone else changed the ticket at the same moment | **409** `CONFLICT` | Two people click "resolve" together |
+
+- **409 Conflict** means "your request is valid, but clashes with the current state of the thing".
+- **403 Forbidden** means "I know who you are, and you're not allowed".
+- The checks run in that order: 404 first, so outsiders learn nothing, then 409 or 403.
+
+### Part 4: the history table (`ticket_events`)
+
+Every change writes **one row** describing what happened:
+
+| type | actor | from | to |
+|---|---|---|---|
+| created | resident | – | open |
+| assigned | manager | open | assigned |
+| status_changed | technician | assigned | in_progress |
+| status_changed | technician | in_progress | resolved |
+| status_changed | resident | resolved | closed |
+
+- **Append-only:** rows are only ever **added**, never changed or deleted. History you can edit isn't history. Like a bank statement: mistakes are fixed with a new entry, not by rubbing out the old one.
+- This kind of record is called an **audit log** (or audit trail). It answers "who did what, and when?", which matters for disputes ("I reported this 2 weeks ago!") and for security.
+- It uses the same safety patterns as `tickets`: composite foreign keys, so an event can never point at another organization's ticket or user, and an index for "show this ticket's history".
+- **Your real ticket has no history rows**, because it was created before this table existed. Only changes from now on are recorded.
+
+**The migration** followed the Drizzle workflow from chapter 19: edit `schema.ts` → `npm run db:generate` → **read the SQL** (only a new table, nothing existing touched) → tested on the test database → `--status` on the real one → apply → verify.
+
+### Part 5: transactions, the change and its history together
+
+```ts
+return db.transaction(async (tx) => {
+  const [updated] = await tx.update(tickets).set({ status: to }).where(...).returning();
+  if (!updated) throw CONFLICT();
+  await tx.insert(ticketEvents).values({ ... });
+  return updated;
+});
+```
+
+The status change and its history row are saved **together or not at all** (chapter 12). Without a transaction, a crash between the two lines could leave a ticket marked `resolved` with no record of who resolved it. Throwing an error inside `db.transaction()` automatically **rolls back** everything in it.
+
+### Part 6: race conditions and optimistic concurrency ⭐
+
+**The problem:** two requests arrive at the same moment, for example the technician double-clicks "resolve":
+
+```
+Request A: read ticket → status is in_progress ✓ rules OK
+Request B: read ticket → status is in_progress ✓ rules OK
+Request A: UPDATE status = resolved   → saved, history row written
+Request B: UPDATE status = resolved   → saved AGAIN, a second history row!
+```
+
+Both passed the check, because both read the ticket **before** either changed it. This is a **race condition**: the result depends on the exact timing. Worse versions: a manager reassigns the ticket while the old technician is resolving it.
+
+**The fix, optimistic concurrency:** make the UPDATE itself check that nothing changed since we read it:
+
+```ts
+// UPDATE tickets SET status = 'resolved'
+// WHERE id = ? AND organization_id = ? AND status = 'in_progress' AND assigned_to = ?
+//                                         ▲ the status we saw     ▲ the assignee we saw
+```
+
+If someone else changed the ticket in between, the WHERE no longer matches, **zero rows are updated**, and we return **409 CONFLICT** ("reload and try again") instead of silently overwriting their change.
+
+**Why "optimistic"?** We *assume* conflicts are rare, so we don't lock anything up front; we just detect a conflict at the last moment. The alternative, **pessimistic** locking, locks the row first (`SELECT … FOR UPDATE`), so others must wait. Optimistic is simpler and faster when conflicts are rare, as they are here.
+
+**Analogy:** two people editing the same Google Doc paragraph. Instead of locking the doc, the second save says "this changed since you opened it".
+
+**How PostgreSQL makes it work:** when request B's UPDATE waits for request A's to finish, PostgreSQL **re-checks B's WHERE against the new version of the row**. The status is now `resolved`, not `in_progress`, so it doesn't match, and B updates zero rows.
+
+### Part 7: testing a race, and a test that lied
+
+My first race test simply sent two requests at once with `Promise.all`. It passed. Then, in the "break it on purpose" round, I **removed** the concurrency check… and the test **still passed, 10 out of 10 times**. The test was useless: the two requests never actually overlapped, because the first always finished before the second even read the ticket.
+
+**The fix was to force the race deterministically** with a database lock:
+
+```ts
+await lock.query("BEGIN");
+await lock.query("SELECT 1 FROM tickets WHERE id = $1 FOR UPDATE", [ticket.id]);  // 1. lock the row
+const pending = Promise.all([setStatus(...), setStatus(...)]);                     // 2. both read + pass rules,
+await waitForQueriesBlockedOnLocks(2);                                              //    then both wait at UPDATE
+await lock.query("COMMIT");                                                          // 3. release: one wins
+```
+
+Reading isn't blocked by the lock, so both requests see `in_progress` and pass the rules. Then both get stuck at their UPDATE. Releasing the lock creates the race **every single time**. The helper watches PostgreSQL's `pg_stat_activity` view until both queries are waiting.
+
+Results:
+
+| Code | Race test (×10) |
+|---|---|
+| Correct | ✅ 10/10 pass: one 200, one 409 `CONFLICT`, one history row |
+| Concurrency check removed | ❌ 10/10 fail: **200 and 200**, the second silently overwrote |
+
+**Lesson:** a passing test proves nothing until you've seen it fail. Breaking the code on purpose found a test that looked fine but tested nothing.
+
+### Part 8: unit tests, finally
+
+`tests/tickets.policy.test.ts` tests the rules **directly**, with no database and no HTTP:
+
+```ts
+const rule = findTransition("assigned", "in_progress")!;
+expect(rule(assignee, ticket)).toBe(true);
+expect(rule(otherTech, ticket)).toBe(false);
+expect(rule(manager, ticket)).toBe(false);
+```
+
+These run in milliseconds and pinpoint exactly which rule broke. Pure functions (Part 2) are what make this possible. Combined with the integration tests, which check that the rules are actually **used** by the API, you get both speed and confidence.
+
+The "break it on purpose" results for the rules:
+
+| Deliberate bug | Caught by |
+|---|---|
+| Any technician counts as "the assignee" | 3 tests (unit + integration) |
+| Service forgets to check who can assign | "forbids a resident/technician from assigning" |
+| Any resident can close any ticket | 3 tests (unit + integration) |
+| No concurrency check | the race test (after fixing it, Part 7) |
+
+### Small things worth knowing
+
+- **Test data per role:** `createOrg()` now creates a resident, a second resident, two technicians, a manager and an admin, so every permission rule can be tested.
+- `it.each([...])` turned 5 "forbids" cases into 5 tests from one block.
+- **`satisfies`** (in `ASSIGNABLE_STATUSES … satisfies readonly TicketStatus[]`) checks a value matches a type **without changing** its type. A typo like `"opne"` is caught.
+- **Not done yet (Phase 3):** residents can currently see *every* ticket in their organization. Real visibility rules, like "residents see only their own tickets" and "technicians see their assigned ones", come with real authentication.
+
+---
+
 ## Glossary
 
 | Term | Simple meaning |
@@ -1241,3 +1426,15 @@ Two test techniques worth noticing:
 | **URL parameter** | A variable part of a URL path, e.g. `:id` in `/api/tickets/:id` |
 | **Location header** | A response header telling the client where a newly created resource lives |
 | **Defense in depth** | Several independent layers of protection, so one mistake doesn't cause a disaster |
+| **State machine** | A fixed set of states and the allowed moves between them (e.g. open → assigned → in_progress) |
+| **Policy / authorization layer** | Code that decides *who may do what*, kept separate from the code that does it |
+| **Pure function** | A function whose result depends only on its inputs, with no database or network. Easy to test |
+| **409 Conflict** | "Your request is valid, but clashes with the current state", e.g. an invalid status change |
+| **403 Forbidden** | "I know who you are, and you're not allowed to do this" |
+| **Audit log** | An append-only record of who did what and when |
+| **Append-only** | Data that is only ever added, never changed or deleted |
+| **Race condition** | A bug where the result depends on the exact timing of two things happening at once |
+| **Optimistic concurrency** | Detecting at save time that someone else changed the data, instead of locking it first |
+| **Pessimistic locking** | Locking data before changing it so others must wait (`SELECT … FOR UPDATE`) |
+| **Row lock** | PostgreSQL blocking other changes to one row until a transaction finishes |
+| **Deterministic test** | A test that behaves the same way every run, never depending on luck or timing |

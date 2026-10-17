@@ -1,9 +1,19 @@
-// Business logic and database access for tickets. Knows nothing about HTTP.
+// Business logic and database access for tickets. Knows nothing about HTTP
+// requests, but throws HttpError for rule violations the caller should see.
 
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import { properties, tickets, type TicketStatus } from "../../db/schema.js";
+import {
+  properties,
+  ticketEvents,
+  tickets,
+  users,
+  type Ticket,
+  type TicketStatus,
+} from "../../db/schema.js";
+import type { AuthContext } from "../../middleware/auth.js";
 import { HttpError } from "../../middleware/errors.js";
+import { canAssign, findTransition, isAssignable } from "./tickets.policy.js";
 import type { CreateTicketBody } from "./tickets.schemas.js";
 
 export interface ListTicketsOptions {
@@ -38,35 +48,149 @@ export async function getTicket(organizationId: string, ticketId: string) {
   return ticket ?? null;
 }
 
-export async function createTicket(
-  organizationId: string,
-  createdBy: string,
-  input: CreateTicketBody,
-) {
+async function getTicketOr404(organizationId: string, ticketId: string): Promise<Ticket> {
+  const ticket = await getTicket(organizationId, ticketId);
+  if (!ticket) throw new HttpError(404, "TICKET_NOT_FOUND", "Ticket not found");
+  return ticket;
+}
+
+export async function createTicket(auth: AuthContext, input: CreateTicketBody) {
   // The database's composite foreign key would also reject a property from
   // another organization, but checking here gives the client a clear 400
   // instead of a database error.
   const [property] = await db
     .select({ id: properties.id })
     .from(properties)
-    .where(and(eq(properties.id, input.propertyId), eq(properties.organizationId, organizationId)));
+    .where(and(eq(properties.id, input.propertyId), eq(properties.organizationId, auth.organizationId)));
   if (!property) {
     throw new HttpError(400, "VALIDATION_ERROR", "Invalid request body", [
       { path: "propertyId", message: "Property not found" },
     ]);
   }
 
-  const [ticket] = await db
-    .insert(tickets)
-    .values({
-      organizationId,
-      createdBy,
-      propertyId: input.propertyId,
-      title: input.title,
-      description: input.description ?? null,
-      // Omitted priority falls back to the database default ('medium').
-      ...(input.priority && { priority: input.priority }),
-    })
-    .returning();
-  return ticket!;
+  // The ticket and its 'created' event are saved together or not at all.
+  return db.transaction(async (tx) => {
+    const [ticket] = await tx
+      .insert(tickets)
+      .values({
+        organizationId: auth.organizationId,
+        createdBy: auth.userId,
+        propertyId: input.propertyId,
+        title: input.title,
+        description: input.description ?? null,
+        // Omitted priority falls back to the database default ('medium').
+        ...(input.priority && { priority: input.priority }),
+      })
+      .returning();
+    await tx.insert(ticketEvents).values({
+      organizationId: auth.organizationId,
+      ticketId: ticket!.id,
+      actorId: auth.userId,
+      type: "created",
+      toStatus: ticket!.status,
+    });
+    return ticket!;
+  });
+}
+
+// Optimistic concurrency: the UPDATE only succeeds if the ticket still looks
+// the way it did when we checked the rules. If someone changed it in between,
+// zero rows match and we report a conflict instead of overwriting their change.
+function unchangedSince(ticket: Ticket) {
+  return and(
+    eq(tickets.id, ticket.id),
+    eq(tickets.organizationId, ticket.organizationId),
+    eq(tickets.status, ticket.status),
+    ticket.assignedTo === null ? isNull(tickets.assignedTo) : eq(tickets.assignedTo, ticket.assignedTo),
+  );
+}
+
+const CONFLICT = () =>
+  new HttpError(409, "CONFLICT", "The ticket was changed by someone else. Reload it and try again.");
+
+export async function assignTicket(auth: AuthContext, ticketId: string, technicianId: string) {
+  const ticket = await getTicketOr404(auth.organizationId, ticketId);
+  if (!canAssign(auth)) {
+    throw new HttpError(403, "FORBIDDEN", "Only managers and admins can assign tickets");
+  }
+
+  const [technician] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(
+      and(
+        eq(users.id, technicianId),
+        eq(users.organizationId, auth.organizationId),
+        eq(users.role, "technician"),
+      ),
+    );
+  if (!technician) {
+    throw new HttpError(400, "VALIDATION_ERROR", "Invalid request body", [
+      { path: "technicianId", message: "Technician not found" },
+    ]);
+  }
+
+  if (!isAssignable(ticket.status)) {
+    throw new HttpError(409, "INVALID_TRANSITION", `Cannot assign a ticket that is ${ticket.status}`);
+  }
+
+  return db.transaction(async (tx) => {
+    const [updated] = await tx
+      .update(tickets)
+      .set({ assignedTo: technicianId, status: "assigned" })
+      .where(unchangedSince(ticket))
+      .returning();
+    if (!updated) throw CONFLICT();
+
+    await tx.insert(ticketEvents).values({
+      organizationId: auth.organizationId,
+      ticketId: ticket.id,
+      actorId: auth.userId,
+      type: "assigned",
+      fromStatus: ticket.status,
+      toStatus: "assigned",
+      assignedTo: technicianId,
+    });
+    return updated;
+  });
+}
+
+export async function changeTicketStatus(auth: AuthContext, ticketId: string, to: TicketStatus) {
+  const ticket = await getTicketOr404(auth.organizationId, ticketId);
+
+  const rule = findTransition(ticket.status, to);
+  if (!rule) {
+    throw new HttpError(409, "INVALID_TRANSITION", `Cannot change status from ${ticket.status} to ${to}`);
+  }
+  if (!rule(auth, ticket)) {
+    throw new HttpError(403, "FORBIDDEN", "You are not allowed to make this change");
+  }
+
+  return db.transaction(async (tx) => {
+    const [updated] = await tx
+      .update(tickets)
+      .set({ status: to })
+      .where(unchangedSince(ticket))
+      .returning();
+    if (!updated) throw CONFLICT();
+
+    await tx.insert(ticketEvents).values({
+      organizationId: auth.organizationId,
+      ticketId: ticket.id,
+      actorId: auth.userId,
+      type: "status_changed",
+      fromStatus: ticket.status,
+      toStatus: to,
+    });
+    return updated;
+  });
+}
+
+export async function getTicketHistory(organizationId: string, ticketId: string) {
+  await getTicketOr404(organizationId, ticketId);
+  return db
+    .select()
+    .from(ticketEvents)
+    .where(and(eq(ticketEvents.organizationId, organizationId), eq(ticketEvents.ticketId, ticketId)))
+    .orderBy(asc(ticketEvents.createdAt), asc(ticketEvents.id));
 }

@@ -2,7 +2,14 @@
 
 import { Router } from "express";
 import { requireUser } from "../../middleware/auth.js";
-import { createTicketHandler, getTicketHandler, listTicketsHandler } from "./tickets.controller.js";
+import {
+  assignTicketHandler,
+  changeStatusHandler,
+  createTicketHandler,
+  getTicketHandler,
+  listTicketsHandler,
+  ticketHistoryHandler,
+} from "./tickets.controller.js";
 
 export const ticketsRouter = Router();
 
@@ -11,3 +18,6 @@ ticketsRouter.use(requireUser);
 ticketsRouter.get("/", listTicketsHandler);
 ticketsRouter.post("/", createTicketHandler);
 ticketsRouter.get("/:id", getTicketHandler);
+ticketsRouter.get("/:id/history", ticketHistoryHandler);
+ticketsRouter.patch("/:id/assign", assignTicketHandler);
+ticketsRouter.patch("/:id/status", changeStatusHandler);
