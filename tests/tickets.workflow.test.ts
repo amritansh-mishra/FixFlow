@@ -92,7 +92,8 @@ describe("PATCH /api/tickets/:id/assign", () => {
 
   it.each(["resident", "technician"] as const)("forbids a %s from assigning", async (role) => {
     const a = await createOrg("a");
-    const ticket = await createTicket(a);
+    // Created by the resident and assigned to the technician, so both can see it.
+    const ticket = await createTicket(a, { status: "assigned", assignedTo: a.technician.id });
 
     const res = await assign(ticket.id, a[role], a.technician.id);
 
@@ -184,11 +185,10 @@ describe("PATCH /api/tickets/:id/status", () => {
     expect((await setStatus(ticket.id, a.manager, "closed")).status).toBe(200);
   });
 
+  // These users can see the ticket, but the rules don't let them make the change.
   it.each([
-    ["another technician starts work", "technician2", "assigned", "in_progress"],
     ["the manager starts work", "manager", "assigned", "in_progress"],
     ["the creator resolves", "resident", "in_progress", "resolved"],
-    ["another resident closes", "resident2", "resolved", "closed"],
     ["the technician closes", "technician", "resolved", "closed"],
   ] as const)("forbids: %s", async (_name, who, from, to) => {
     const a = await createOrg("a");
@@ -198,6 +198,20 @@ describe("PATCH /api/tickets/:id/status", () => {
 
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe("FORBIDDEN");
+  });
+
+  // These users can't even see the ticket, so it doesn't exist for them.
+  it.each([
+    ["another technician starts work", "technician2", "assigned", "in_progress"],
+    ["another resident closes", "resident2", "resolved", "closed"],
+  ] as const)("returns 404 when %s (can't see the ticket)", async (_name, who, from, to) => {
+    const a = await createOrg("a");
+    const ticket = await createTicket(a, { status: from, assignedTo: a.technician.id });
+
+    const res = await setStatus(ticket.id, a[who], to);
+
+    expect(res.status).toBe(404);
+    expect(await db.select().from(ticketEvents)).toHaveLength(0);
   });
 
   it.each([

@@ -1,11 +1,32 @@
 // Who may do what to a ticket. Pure functions with no database and no HTTP,
 // so the rules are easy to read in one place and to unit-test.
 
-import type { Ticket, TicketStatus } from "../../db/schema.js";
+import type { Ticket, TicketStatus, UserRole } from "../../db/schema.js";
 import type { AuthContext } from "../../middleware/auth.js";
 
 type TicketParties = Pick<Ticket, "createdBy" | "assignedTo">;
 type Rule = (auth: AuthContext, ticket: TicketParties) => boolean;
+
+// Which tickets each role can see, within their own organization:
+// "all", or only tickets where this column is the user themselves.
+// Tickets you can't see behave as if they don't exist (404).
+export type TicketScope = "all" | keyof TicketParties;
+
+const VISIBLE_BY_ROLE: Record<UserRole, TicketScope> = {
+  resident: "createdBy", // tickets they reported
+  technician: "assignedTo", // tickets assigned to them
+  manager: "all",
+  admin: "all",
+};
+
+export function ticketScope(auth: AuthContext): TicketScope {
+  return VISIBLE_BY_ROLE[auth.role];
+}
+
+export function canViewTicket(auth: AuthContext, ticket: TicketParties): boolean {
+  const scope = ticketScope(auth);
+  return scope === "all" || ticket[scope] === auth.userId;
+}
 
 const isManager = (auth: AuthContext) => auth.role === "manager" || auth.role === "admin";
 const isAssignee: Rule = (auth, ticket) => ticket.assignedTo === auth.userId;

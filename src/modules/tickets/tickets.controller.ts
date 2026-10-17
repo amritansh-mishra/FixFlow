@@ -23,20 +23,20 @@ import {
 
 // GET /api/tickets?status=open&limit=20
 export const listTicketsHandler: RequestHandler = async (req, res) => {
-  const { organizationId } = getAuth(req);
+  const auth = getAuth(req);
   const query = validate(listTicketsQuery, req.query, "query parameters");
 
-  const rows = await listTickets(organizationId, query);
+  const rows = await listTickets(auth, query);
   res.status(200).json({ data: rows });
 };
 
 // GET /api/tickets/:id
 export const getTicketHandler: RequestHandler = async (req, res) => {
-  const { organizationId } = getAuth(req);
+  const auth = getAuth(req);
   const { id } = validate(ticketIdParams, req.params, "ticket id");
 
-  const ticket = await getTicket(organizationId, id);
-  // 404 (not 403) for other organizations' tickets: don't reveal they exist.
+  const ticket = await getTicket(auth, id);
+  // 404 (not 403) for tickets the user may not see: don't reveal they exist.
   if (!ticket) throw new HttpError(404, "TICKET_NOT_FOUND", "Ticket not found");
   res.status(200).json({ data: ticket });
 };
@@ -72,9 +72,9 @@ export const changeStatusHandler: RequestHandler = async (req, res) => {
 
 // GET /api/tickets/:id/history
 export const ticketHistoryHandler: RequestHandler = async (req, res) => {
-  const { organizationId } = getAuth(req);
+  const auth = getAuth(req);
   const { id } = validate(ticketIdParams, req.params, "ticket id");
 
-  const events = await getTicketHistory(organizationId, id);
+  const events = await getTicketHistory(auth, id);
   res.status(200).json({ data: events });
 };

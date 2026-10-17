@@ -29,7 +29,17 @@ curl -X POST localhost:3000/api/auth/login -H "Content-Type: application/json" \
 curl localhost:3000/api/tickets -H "Authorization: Bearer <token>"
 ```
 
-Every other `/api` route needs that header and only sees data from the user's own organization. Passwords are set from the terminal (the prompt is hidden; it logs the user out everywhere):
+Every other `/api` route needs that header and only sees data from the user's own organization.
+
+Login is rate-limited: 5 failed attempts per account, or 20 attempts per IP address, within 15 minutes returns `429 TOO_MANY_ATTEMPTS` with a `Retry-After` header.
+
+Within an organization, users see tickets according to their role. Tickets outside a user's scope return `404`:
+
+| Role | Sees |
+|---|---|
+| resident | tickets they created |
+| technician | tickets assigned to them |
+| manager, admin | every ticket in the organization | Passwords are set from the terminal (the prompt is hidden; it logs the user out everywhere):
 
 ```bash
 npm run user:set-password -- --org <organization-slug> --email <email>

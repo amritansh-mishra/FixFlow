@@ -28,7 +28,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 22. [Validation with Zod, GET one ticket, create a ticket](#22-validation-with-zod-get-one-ticket-create-a-ticket)
 23. [Assignment, status workflow, history and race conditions](#23-assignment-status-workflow-history-and-race-conditions)
 24. [Real authentication: passwords, login and sessions](#24-real-authentication-passwords-login-and-sessions)
-25. [Glossary](#glossary)
+25. [Login rate limiting and ticket visibility](#25-login-rate-limiting-and-ticket-visibility)
+26. [Glossary](#glossary)
 
 ---
 
@@ -1541,6 +1542,199 @@ Test users **don't** get passwords by default. Hashing 6 passwords for every tes
 
 ---
 
+## 25. Login rate limiting and ticket visibility
+
+Two security gaps from chapter 24, now closed:
+1. **Rate limiting:** nothing stopped an attacker from trying thousands of passwords.
+2. **Visibility:** every resident could see every ticket in their organization.
+
+### Part 1: rate limiting, "too many attempts, try later"
+
+**The attack:** an attacker picks an account and tries passwords one after another. The slow hash (chapter 24) means each guess costs ~180 ms, but nothing stopped them trying forever. This is called a **brute-force attack**.
+
+**The fix:** count failed attempts, and after too many, refuse to even check for a while.
+
+**Analogy:** your phone after 5 wrong PINs: "Try again in 15 minutes."
+
+### Two limits, two attacks
+
+| Limit | Counts | Stops |
+|---|---|---|
+| **Per account** (org + email) | 5 **failed** attempts per 15 min | Guessing many passwords for **one** account |
+| **Per IP address** | 20 attempts (any result) per 15 min | One machine trying **one common password** (like `password123`) against **many** accounts |
+
+The second attack is called **password spraying**. It avoids per-account limits by trying each account only once or twice. The IP limit catches it.
+
+When blocked, the response is:
+
+```
+HTTP 429 Too Many Requests
+Retry-After: 900
+
+{ "error": { "code": "TOO_MANY_ATTEMPTS", "message": "Too many login attempts. Try again in 15 minutes." } }
+```
+
+- **429** is the HTTP code for "slow down".
+- **`Retry-After`** tells the client how many seconds to wait, so an app can show a countdown.
+
+### The order of checks matters
+
+```ts
+// 1. Blocked?  → refuse immediately (even if the password is right!)
+const waitMs = Math.max(loginLimits.account.retryAfterMs(account), loginLimits.ip.retryAfterMs(ip));
+if (waitMs > 0) throw new HttpError(429, ...);
+
+// 2. Count this attempt against the IP
+loginLimits.ip.hit(ip);
+
+// 3. Only now check the password
+const result = await login(organization, email, password);
+if (!result.ok) loginLimits.account.hit(account);   // count the failure
+else loginLimits.account.reset(account);            // success clears the count
+```
+
+**Why refuse a correct password while blocked?** Otherwise the attacker could keep guessing: a 429 would mean "wrong", and a 200 would mean "found it!". The block has to apply **whatever the password is**. It also saves the server from doing the expensive hash for blocked attempts.
+
+**Accounts that don't exist are limited the same way.** If only real accounts got blocked, "429 after 5 tries" would reveal that an account exists (chapter 24's *user enumeration* again).
+
+**Email case:** `Me@x.com` and `me@x.com` count as the **same** account, otherwise an attacker could get 5 extra guesses per capitalization.
+
+### How the limiter works: a fixed window
+
+`src/lib/rate-limiter.ts` keeps, for each key, a **count** and **when the window ends**:
+
+```
+key "org\nme@x.com":  count 3, window ends at 10:15
+```
+
+- The first attempt starts a 15-minute window.
+- Each attempt adds 1.
+- At the limit, it's blocked until the window ends.
+- When the window ends, the count starts from zero.
+
+**Fake clock for testing:** the limiter takes a `now()` function. Real code uses the real clock; tests pass a fake one they can move forward instantly:
+
+```ts
+const clock = { now: 0 };
+const limiter = new FixedWindowLimiter(1, 1000, () => clock.now);
+limiter.hit("k");
+clock.now = 1000;          // "wait" one second, in zero real time
+expect(limiter.retryAfterMs("k")).toBe(0);
+```
+
+This is called **dependency injection**: giving code the things it depends on (here, the clock) from outside, so tests can swap them.
+
+**Memory clean-up:** finished windows are deleted every minute (`prune()`), so the counts can't grow forever. `setInterval(...).unref()` means this timer won't keep the program running on its own.
+
+### The tradeoff: memory vs Redis
+
+The counts are kept **in the server's memory**:
+
+| | In memory (now) | Redis (later) |
+|---|---|---|
+| Setup | Nothing extra | Needs a Redis server |
+| Server restart | Counts reset | Counts kept |
+| Several servers | Each has its own counts (an attacker gets 5 tries **per server**) | Shared |
+
+With one server, memory is fine. The limiter's methods (`hit`, `retryAfterMs`, `reset`) stay the same when moving to Redis; only the storage changes. Redis is planned with background jobs.
+
+### Known limitation: lockout as a weapon
+
+An attacker who knows your email can **deliberately** fail 5 times to lock *you* out for 15 minutes. This is a real tradeoff of account limits. It's kept short (15 minutes, not permanent) to limit the damage. Bigger systems add CAPTCHAs or email unlock links.
+
+### Part 2: visibility, "who sees which tickets"
+
+Before, any user could see **every** ticket in their organization. A resident could read other residents' reports. Now:
+
+| Role | Sees |
+|---|---|
+| Resident | Tickets **they created** |
+| Technician | Tickets **assigned to them** |
+| Manager, admin | **Every** ticket in the organization |
+
+### One rule, written once, used everywhere
+
+The rule is **data**, in `tickets.policy.ts`:
+
+```ts
+const VISIBLE_BY_ROLE: Record<UserRole, TicketScope> = {
+  resident: "createdBy",     // tickets where createdBy = me
+  technician: "assignedTo",  // tickets where assignedTo = me
+  manager: "all",
+  admin: "all",
+};
+```
+
+`Record<UserRole, …>` means **TypeScript forces an entry for every role**. If someone adds a new role later and forgets to decide its visibility, the code won't compile.
+
+Two things are built from that one table:
+- **`canViewTicket(auth, ticket)`**: a yes/no check, unit-tested without a database.
+- **`visibleTo(auth)`**: a SQL condition the service adds to **every** ticket query:
+
+```ts
+function visibleTo(auth) {
+  const scope = ticketScope(auth);
+  return and(
+    eq(tickets.organizationId, auth.organizationId),                   // the tenant boundary
+    scope === "all" ? undefined : eq(tickets[scope], auth.userId),     // the role boundary
+  );
+}
+```
+
+Because both come from the same table, they can't disagree.
+
+### Hidden tickets return 404, everywhere
+
+`visibleTo()` is used by the list, by `GET /:id`, by history, and by the assign and status endpoints (via `getTicketOr404`). So a ticket you can't see behaves **exactly like a ticket that doesn't exist**, the same rule as other organizations' tickets in chapter 22.
+
+This changed two existing tests, for the better:
+
+| Situation | Before | Now |
+|---|---|---|
+| Another technician tries to start work on someone else's ticket | 403 (exists, not allowed) | **404** (can't see it at all) |
+| Another resident tries to close someone else's ticket | 403 | **404** |
+| The manager tries to start work (can see it, not allowed) | 403 | 403 (unchanged) |
+
+**The order of checks:** *can you see it?* (404), then *is the move valid?* (409), then *are you allowed?* (403). The first check means outsiders learn nothing.
+
+**Access follows the data:** when a manager reassigns a ticket, the old technician **immediately** loses access and the new one gains it. Nothing is cached; every request asks the database.
+
+### Part 3: testing, and the tests I got wrong
+
+**Break it on purpose, round 6:**
+
+| Deliberate bug | Caught by |
+|---|---|
+| Limit checked only after the password | "blocks an account… even with the right password" |
+| Success doesn't clear failed attempts | "a successful login clears the failed attempts" |
+| IP attempts not counted | "blocks an IP address after 20 attempts" |
+| Email case not normalized | "treats the email case-insensitively" |
+| Queries ignore the role (organization only) | 8 visibility tests |
+| Technicians scoped by creator instead of assignee | 15 tests |
+
+**Two mistakes of my own, caught along the way:**
+1. **A check that silently checked nothing.** When I first ran bug 5, the output was **empty**: no failures, no passes. The shell command had passed both test files as one quoted name, so Vitest matched no tests at all. **Empty output is not a pass.** Always look for the "Tests N passed" line.
+2. **An unreadable test name:** `a technician's scope is { sessionId: 's', … }`. In `it.each`, each `%s` takes the **next value in order**, and I had the values in the wrong order. Fixed by reordering, giving the readable `role technician → scope assignedTo`.
+
+**Tests per layer now:**
+
+| File | Kind | Tests |
+|---|---|---|
+| `rate-limiter.test.ts` | unit (fake clock) | 7 |
+| `tickets.policy.test.ts` | unit (no database) | 31 |
+| `auth.test.ts` | integration | 32 |
+| `tickets.test.ts`, `tickets.workflow.test.ts`, `tickets.visibility.test.ts` | integration | 67 |
+| **Total** | | **137** |
+
+### Still to do (security)
+
+- **Trust proxy:** behind a load balancer or reverse proxy, `req.ip` is the proxy's address, so every user would share one IP limit. When deploying, set Express's `trust proxy` setting to match the real setup.
+- **Least-privilege database user** (the app still connects as `postgres`).
+- **Cleaning up expired sessions** (background job).
+- **Cookies with CSRF protection** for the browser frontend.
+
+---
+
 ## Glossary
 
 | Term | Simple meaning |
@@ -1613,3 +1807,12 @@ Test users **don't** get passwords by default. Hashing 6 passwords for every tes
 | **Constant-time comparison** | Comparing secrets in a way that takes the same time regardless of where they differ |
 | **Raw mode (terminal)** | A terminal mode where key presses go straight to the program without being shown |
 | **JWT** | JSON Web Token: a signed token the server can verify without a database lookup, but can't easily cancel |
+| **Brute-force attack** | Trying password after password against one account until one works |
+| **Password spraying** | Trying one common password against many accounts, to dodge per-account limits |
+| **Rate limiting** | Capping how many times something can be done in a period of time |
+| **429 Too Many Requests** | HTTP status meaning "slow down, you've hit a limit" |
+| **Retry-After header** | Tells the client how many seconds to wait before trying again |
+| **Fixed window** | A rate-limit method: count hits in a window that starts with the first hit and resets when it ends |
+| **Dependency injection** | Passing in the things code depends on (like a clock) so tests can replace them |
+| **Visibility scope** | Which records a user is allowed to see, e.g. "tickets I created" |
+| **Trust proxy** | An Express setting that tells it to read the real client IP from headers added by a reverse proxy |

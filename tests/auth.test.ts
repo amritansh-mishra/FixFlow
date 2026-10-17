@@ -6,13 +6,17 @@ import { createApp } from "../src/app.js";
 import { db, pool } from "../src/db/index.js";
 import { sessions, users } from "../src/db/schema.js";
 import { hashPassword, verifyPassword } from "../src/lib/passwords.js";
+import { resetLoginLimits } from "../src/modules/auth/auth.rate-limits.js";
 import { setUserPassword } from "../src/modules/auth/auth.service.js";
 import { createOrg, resetDatabase, type Org } from "./helpers.js";
 
 const app = createApp();
 const PASSWORD = "correct horse battery staple";
 
-beforeEach(resetDatabase);
+beforeEach(async () => {
+  await resetDatabase();
+  resetLoginLimits();
+});
 afterAll(() => pool.end());
 
 // Gives the org's resident a password so they can log in.
@@ -219,5 +223,69 @@ describe("setUserPassword (used by the CLI script)", () => {
     await createOrg("a");
 
     expect(await setUserPassword("a", "nobody@a.test", PASSWORD)).toBe(false);
+  });
+});
+
+describe("login rate limiting", () => {
+  const wrong = (a: Org) => ({ organization: "a", email: a.resident.email, password: "not the password" });
+  const right = (a: Org) => ({ organization: "a", email: a.resident.email, password: PASSWORD });
+
+  it("blocks an account after 5 failed attempts, even with the right password", async () => {
+    const a = await withPassword(await createOrg("a"));
+    for (let i = 0; i < 5; i++) expect((await login(wrong(a))).status).toBe(401);
+
+    const blocked = await login(right(a));
+
+    expect(blocked.status).toBe(429);
+    expect(blocked.body.error.code).toBe("TOO_MANY_ATTEMPTS");
+    expect(blocked.body.error.message).toBe("Too many login attempts. Try again in 15 minutes.");
+    expect(Number(blocked.headers["retry-after"])).toBeGreaterThan(14 * 60);
+    expect(await db.select().from(sessions).where(eq(sessions.userId, a.resident.id))).toHaveLength(1); // no new session
+  });
+
+  it("doesn't block other accounts", async () => {
+    const a = await withPassword(await createOrg("a"));
+    await db.update(users).set({ passwordHash: await hashPassword(PASSWORD) }).where(eq(users.id, a.manager.id));
+    for (let i = 0; i < 5; i++) await login(wrong(a));
+
+    const res = await login({ organization: "a", email: a.manager.email, password: PASSWORD });
+
+    expect(res.status).toBe(200);
+  });
+
+  it("a successful login clears the failed attempts", async () => {
+    const a = await withPassword(await createOrg("a"));
+    for (let i = 0; i < 4; i++) await login(wrong(a));
+    expect((await login(right(a))).status).toBe(200);
+
+    for (let i = 0; i < 4; i++) expect((await login(wrong(a))).status).toBe(401);
+  });
+
+  it("limits accounts that don't exist the same way (no enumeration)", async () => {
+    await createOrg("a");
+    const ghost = { organization: "a", email: "ghost@a.test", password: "whatever" };
+    for (let i = 0; i < 5; i++) expect((await login(ghost)).status).toBe(401);
+
+    expect((await login(ghost)).status).toBe(429);
+  });
+
+  it("treats the email case-insensitively when counting", async () => {
+    const a = await withPassword(await createOrg("a"));
+    for (let i = 0; i < 5; i++) {
+      await login({ ...wrong(a), email: i % 2 ? a.resident.email.toUpperCase() : a.resident.email });
+    }
+
+    expect((await login(right(a))).status).toBe(429);
+  });
+
+  it("blocks an IP address after 20 attempts across different accounts", async () => {
+    await createOrg("a");
+    for (let i = 0; i < 20; i++) {
+      expect((await login({ organization: "a", email: `user${i}@a.test`, password: "guess123" })).status).toBe(401);
+    }
+
+    const res = await login({ organization: "a", email: "user99@a.test", password: "guess123" });
+
+    expect(res.status).toBe(429);
   });
 });

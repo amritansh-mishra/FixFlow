@@ -3,7 +3,13 @@
 import { describe, expect, it } from "vitest";
 import type { UserRole } from "../src/db/schema.js";
 import type { AuthContext } from "../src/middleware/auth.js";
-import { canAssign, findTransition, isAssignable } from "../src/modules/tickets/tickets.policy.js";
+import {
+  canAssign,
+  canViewTicket,
+  findTransition,
+  isAssignable,
+  ticketScope,
+} from "../src/modules/tickets/tickets.policy.js";
 
 const as = (userId: string, role: UserRole): AuthContext => ({ sessionId: "s", userId, organizationId: "org", role });
 
@@ -77,5 +83,31 @@ describe("findTransition", () => {
     expect(rule(admin, ticket)).toBe(true);
     expect(rule(otherResident, ticket)).toBe(false);
     expect(rule(assignee, ticket)).toBe(false);
+  });
+});
+
+describe("ticket visibility", () => {
+  it.each([
+    ["resident", "createdBy", creator],
+    ["technician", "assignedTo", assignee],
+    ["manager", "all", manager],
+    ["admin", "all", admin],
+  ] as const)("role %s → scope %s", (_name, scope, auth) => {
+    expect(ticketScope(auth)).toBe(scope);
+  });
+
+  it.each([
+    ["the creator", creator, true],
+    ["another resident", otherResident, false],
+    ["the assigned technician", assignee, true],
+    ["another technician", otherTech, false],
+    ["a manager", manager, true],
+    ["an admin", admin, true],
+  ] as const)("%s can see the ticket: %s", (_name, auth, expected) => {
+    expect(canViewTicket(auth, ticket)).toBe(expected);
+  });
+
+  it("a technician can't see an unassigned ticket", () => {
+    expect(canViewTicket(assignee, { createdBy: "creator", assignedTo: null })).toBe(false);
   });
 });

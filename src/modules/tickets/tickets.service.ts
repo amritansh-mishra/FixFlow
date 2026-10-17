@@ -13,7 +13,7 @@ import {
 } from "../../db/schema.js";
 import type { AuthContext } from "../../middleware/auth.js";
 import { HttpError } from "../../middleware/errors.js";
-import { canAssign, findTransition, isAssignable } from "./tickets.policy.js";
+import { canAssign, findTransition, isAssignable, ticketScope } from "./tickets.policy.js";
 import type { CreateTicketBody } from "./tickets.schemas.js";
 
 export interface ListTicketsOptions {
@@ -21,14 +21,24 @@ export interface ListTicketsOptions {
   limit: number;
 }
 
-export async function listTickets(organizationId: string, options: ListTicketsOptions) {
+// SQL condition for "tickets this user may see": their organization, narrowed
+// by role (see ticketScope in tickets.policy.ts). Every ticket query uses it.
+function visibleTo(auth: AuthContext) {
+  const scope = ticketScope(auth);
+  return and(
+    // Always scope to the caller's organization: this is the tenant boundary.
+    eq(tickets.organizationId, auth.organizationId),
+    scope === "all" ? undefined : eq(tickets[scope], auth.userId),
+  );
+}
+
+export async function listTickets(auth: AuthContext, options: ListTicketsOptions) {
   return db
     .select()
     .from(tickets)
     .where(
       and(
-        // Always scope to the caller's organization: this is the tenant boundary.
-        eq(tickets.organizationId, organizationId),
+        visibleTo(auth),
         // and() skips undefined, so the status filter is optional.
         options.status ? eq(tickets.status, options.status) : undefined,
       ),
@@ -38,18 +48,19 @@ export async function listTickets(organizationId: string, options: ListTicketsOp
     .limit(options.limit);
 }
 
-// Returns null when the ticket doesn't exist OR belongs to another
-// organization. Callers can't tell the two apart, which is intentional.
-export async function getTicket(organizationId: string, ticketId: string) {
+// Returns null when the ticket doesn't exist OR the user may not see it
+// (another organization, or outside their role's scope). Callers can't tell
+// these apart, which is intentional.
+export async function getTicket(auth: AuthContext, ticketId: string) {
   const [ticket] = await db
     .select()
     .from(tickets)
-    .where(and(eq(tickets.id, ticketId), eq(tickets.organizationId, organizationId)));
+    .where(and(eq(tickets.id, ticketId), visibleTo(auth)));
   return ticket ?? null;
 }
 
-async function getTicketOr404(organizationId: string, ticketId: string): Promise<Ticket> {
-  const ticket = await getTicket(organizationId, ticketId);
+async function getTicketOr404(auth: AuthContext, ticketId: string): Promise<Ticket> {
+  const ticket = await getTicket(auth, ticketId);
   if (!ticket) throw new HttpError(404, "TICKET_NOT_FOUND", "Ticket not found");
   return ticket;
 }
@@ -109,7 +120,7 @@ const CONFLICT = () =>
   new HttpError(409, "CONFLICT", "The ticket was changed by someone else. Reload it and try again.");
 
 export async function assignTicket(auth: AuthContext, ticketId: string, technicianId: string) {
-  const ticket = await getTicketOr404(auth.organizationId, ticketId);
+  const ticket = await getTicketOr404(auth, ticketId);
   if (!canAssign(auth)) {
     throw new HttpError(403, "FORBIDDEN", "Only managers and admins can assign tickets");
   }
@@ -156,7 +167,7 @@ export async function assignTicket(auth: AuthContext, ticketId: string, technici
 }
 
 export async function changeTicketStatus(auth: AuthContext, ticketId: string, to: TicketStatus) {
-  const ticket = await getTicketOr404(auth.organizationId, ticketId);
+  const ticket = await getTicketOr404(auth, ticketId);
 
   const rule = findTransition(ticket.status, to);
   if (!rule) {
@@ -186,11 +197,11 @@ export async function changeTicketStatus(auth: AuthContext, ticketId: string, to
   });
 }
 
-export async function getTicketHistory(organizationId: string, ticketId: string) {
-  await getTicketOr404(organizationId, ticketId);
+export async function getTicketHistory(auth: AuthContext, ticketId: string) {
+  await getTicketOr404(auth, ticketId);
   return db
     .select()
     .from(ticketEvents)
-    .where(and(eq(ticketEvents.organizationId, organizationId), eq(ticketEvents.ticketId, ticketId)))
+    .where(and(eq(ticketEvents.organizationId, auth.organizationId), eq(ticketEvents.ticketId, ticketId)))
     .orderBy(asc(ticketEvents.createdAt), asc(ticketEvents.id));
 }
