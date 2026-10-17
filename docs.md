@@ -25,7 +25,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 19. [Setting up Drizzle in FixFlow](#19-setting-up-drizzle-in-fixflow)
 20. [The first endpoint: GET /api/tickets](#20-the-first-endpoint-get-apitickets)
 21. [Automated tests](#21-automated-tests)
-22. [Glossary](#glossary)
+22. [Validation with Zod, GET one ticket, create a ticket](#22-validation-with-zod-get-one-ticket-create-a-ticket)
+23. [Glossary](#glossary)
 
 ---
 
@@ -845,6 +846,8 @@ function parseLimit(raw: unknown): number {
 
 Later, the **Zod** library will replace these hand-written checks. Writing them by hand first shows what Zod does.
 
+> **Update (chapter 22):** these hand-written checks were replaced by Zod, and the `X-Organization-Id` header below was replaced by `X-User-Id`.
+
 ### The temporary organization header ⚠️
 
 The API needs to know **which organization** is asking. That should come from a **verified login**, which doesn't exist yet (Phase 3).
@@ -986,6 +989,210 @@ npm run test:watch   # re-run tests automatically when you save a file
 
 ---
 
+## 22. Validation with Zod, GET one ticket, create a ticket
+
+### What was added
+
+```
+GET  /api/tickets/:id   → one ticket
+POST /api/tickets       → create a ticket
+```
+
+Plus three supporting changes: **Zod** for validation, a better temporary login header, and 16 new tests (29 in total).
+
+### Part 1: Zod, describing what valid input looks like
+
+In chapter 20 we wrote checks by hand: "is it a string? only digits? between 1 and 50?". That works, but gets long and repetitive. **Zod** lets you **describe the shape of valid data**, and it does all the checking for you.
+
+**Analogy:** instead of a guard asking each visitor ten separate questions, you give the guard a **photo of what a valid ID card looks like**. Anything that doesn't match is turned away.
+
+`src/modules/tickets/tickets.schemas.ts`:
+
+```ts
+export const createTicketBody = z.strictObject({
+  propertyId:  z.uuid(),                                  // must be a UUID
+  title:       z.string().trim().min(1).max(200),         // trim spaces, 1–200 chars
+  description: z.string().trim().max(5000).optional(),    // may be left out
+  priority:    z.enum(TICKET_PRIORITIES).optional(),      // one of low/medium/high/urgent
+});
+```
+
+Read it like a sentence: *"a propertyId that's a UUID, a title that's a string with spaces trimmed, between 1 and 200 characters…"*
+
+**The query parameters from chapter 20, now in Zod:**
+
+```ts
+export const listTicketsQuery = z.object({
+  status: z.enum(TICKET_STATUSES).optional(),
+  limit:  z.coerce.number().int().min(1).max(50).default(20),
+});
+```
+
+- **`z.coerce.number()`**: everything in a URL is text, so `?limit=20` arrives as the **string** `"20"`. `coerce` converts it to the **number** `20` first, then checks it.
+- **`.default(20)`** is used if `limit` isn't given.
+- I tested the tricky inputs before using it: `"0"`, `"51"`, `"abc"`, `"1.5"`, `""`, and `?limit=1&limit=2` (an array) are all rejected.
+
+**Types for free:** `z.infer` turns a schema into a TypeScript type, so the rules and the type can never disagree:
+
+```ts
+export type CreateTicketBody = z.infer<typeof createTicketBody>;
+// → { propertyId: string; title: string; description?: string; priority?: "low" | ... }
+```
+
+### Part 2: one `validate()` helper for everything
+
+`src/lib/validate.ts`:
+
+```ts
+export function validate(schema, input, label) {
+  const result = schema.safeParse(input);       // check without throwing
+  if (!result.success) {
+    const details = result.error.issues.map((issue) => ({
+      path: issue.path.join("."),               // which field
+      message: issue.message,                   // what's wrong
+    }));
+    throw new HttpError(400, "VALIDATION_ERROR", `Invalid ${label}`, details);
+  }
+  return result.data;                           // the cleaned, typed value
+}
+```
+
+In a controller it's one line:
+
+```ts
+const body = validate(createTicketBody, req.body, "request body");
+// from here on, `body` is fully checked AND typed
+```
+
+**All problems are reported at once**, each tied to its field:
+
+```json
+{ "error": { "code": "VALIDATION_ERROR", "message": "Invalid request body", "details": [
+  { "path": "propertyId", "message": "Invalid input: expected string, received undefined" },
+  { "path": "title",      "message": "Too small: expected string to have >=1 characters" },
+  { "path": "priority",   "message": "Invalid option: expected one of \"low\"|\"medium\"|\"high\"|\"urgent\"" },
+  { "path": "",           "message": "Unrecognized key: \"status\"" }
+]}}
+```
+
+A frontend can put each message next to the right form field.
+
+**`result.data` is the cleaned version**: `"   Broken door   "` becomes `"Broken door"` and `"20"` becomes `20`. Always use the parsed value, never the raw `req.body`.
+
+### Part 3: `strictObject`, don't let clients set what the server controls
+
+A ticket's `organizationId`, `createdBy`, `status` and `assignedTo` must be set **by the server**, never by the client. What if someone sends:
+
+```json
+{ "propertyId": "…", "title": "Sneaky", "organizationId": "<another org>", "status": "closed" }
+```
+
+- `z.object()` would **silently drop** the extra fields. That's safe, but the client never learns they were ignored.
+- **`z.strictObject()` rejects the request** with "Unrecognized key". It's safe *and* clear.
+
+Even without this, the service never copies those fields from the request: it uses the organization and user from `req.auth`. Two layers of protection.
+
+This attack has a name: **mass assignment**, when a server blindly saves whatever fields the client sends.
+
+### Part 4: the better temporary login header
+
+`POST` needs `createdBy`, meaning **who** created the ticket. The old header only gave the organization. So `X-Organization-Id` was replaced with **`X-User-Id`**:
+
+```
+Before:  client says "I'm from organization X"   → server believes it
+After:   client says "I'm user Y"                → server LOOKS UP user Y in the database
+                                                   → organization and role come from the user's own row
+```
+
+```ts
+const [user] = await db.select({ id: users.id, organizationId: users.organizationId, role: users.role })
+  .from(users).where(eq(users.id, parsed.data));
+if (!user) throw new HttpError(401, "UNAUTHENTICATED", "Unknown user");
+req.auth = { userId: user.id, organizationId: user.organizationId, role: user.role };
+```
+
+**Why this is better:** the organization is now **derived on the server** from trusted data, which is exactly how real login will work. In Phase 3, "user Y" will come from a verified login token instead of a header, and **only this one file changes**.
+
+**Still not secure:** anyone can claim to be any user by sending their id. So it's still marked ⚠️ TEMPORARY and disabled in production.
+
+`req.auth` now also has `role`, ready for Phase 3's permission rules (e.g. "only managers can assign tickets").
+
+### Part 5: `GET /api/tickets/:id`, and why 404 instead of 403
+
+```ts
+const ticket = await getTicket(organizationId, id);   // WHERE id = ? AND organization_id = ?
+if (!ticket) throw new HttpError(404, "TICKET_NOT_FOUND", "Ticket not found");
+```
+
+If a user from Hostel A asks for a ticket that belongs to Hostel B, there are two possible answers:
+- **403 Forbidden**: "that exists, but you can't see it". This **leaks information**: it confirms the ticket exists.
+- **404 Not Found**: "no such ticket". The same answer as for a ticket that really doesn't exist.
+
+We use **404**, so outsiders can't even discover which tickets exist. The query does this naturally: by searching with **both** the id and the organization, another organization's ticket simply isn't found.
+
+`:id` in the route is a **URL parameter**: `/api/tickets/abc-123` gives `req.params.id === "abc-123"`. It's validated as a UUID too, so `/api/tickets/123` gives a 400, not a database error.
+
+### Part 6: `POST /api/tickets`, creating a ticket
+
+The steps:
+1. `requireUser` works out **who** is asking (user, organization, role).
+2. Zod checks the body.
+3. The service checks the **property belongs to the caller's organization**.
+4. It inserts the ticket, with `organizationId` and `createdBy` from `req.auth`, never from the body.
+5. It replies **201 Created**, with a `Location` header pointing at the new ticket.
+
+```ts
+res.status(201).location(`/api/tickets/${ticket.id}`).json({ data: ticket });
+```
+
+- **201** (not 200) means "a new thing was created".
+- The **`Location`** header tells the client where to find it: `/api/tickets/<new id>`.
+- Leaving out `priority` lets the **database default** (`'medium'`) apply, so the default lives in one place.
+
+### Part 7: defense in depth
+
+The service checks that the property belongs to the caller's organization. But the database **also** checks this, with the composite foreign key from the baseline. Why both?
+
+During the "break it on purpose" test, I deleted the service's check. The result:
+- **The database still blocked the cross-organization ticket** (`violates foreign key constraint "tickets_property_id_organization_id_fkey"`). No bad data was saved.
+- **But the client got a 500** ("something broke") instead of a clear 400 ("Property not found").
+
+| Layer | Job |
+|---|---|
+| App check (service) | Gives the client a **clear, helpful error** |
+| Database rule (foreign key) | The **last line of defense**, even if the app has a bug |
+
+**Defense in depth** means several independent layers of protection, so one mistake doesn't cause a disaster. Like a house with a lock on the door **and** an alarm.
+
+### Part 8: testing the tests again, with three bugs
+
+| Deliberate bug | Test that caught it |
+|---|---|
+| `GET /:id` forgets the organization filter | "returns 404 for another organization's ticket" |
+| `POST` skips the property ownership check | "rejects a property from another organization and saves nothing" |
+| `strictObject` changed to `object` | "rejects fields the server controls" |
+
+Each bug was caught by **exactly one** test, the one written for it, and everything passed again after restoring the code.
+
+Two test techniques worth noticing:
+- **Checking nothing was saved:** `expect(await db.select().from(tickets)).toHaveLength(0)`. A rejected request must leave the database untouched.
+- **Checking nothing leaked:** `expect(JSON.stringify(res.body)).not.toContain("B's secret ticket")`.
+
+### HTTP status codes used so far
+
+| Code | When |
+|---|---|
+| 200 | Got the data |
+| 201 | Created a ticket |
+| 400 | Invalid input (with `details`) |
+| 401 | No user, or unknown user |
+| 404 | No such route or ticket, including other organizations' tickets |
+| 413 | Body too large |
+| 500 | Unexpected bug |
+| 503 | Database unreachable |
+
+---
+
 ## Glossary
 
 | Term | Simple meaning |
@@ -1027,3 +1234,10 @@ npm run test:watch   # re-run tests automatically when you save a file
 | **Arrange, Act, Assert** | The three steps of a test: set up, do the thing, check the result |
 | **Mutation testing** | Breaking code on purpose to make sure the tests notice |
 | **Declaration merging** | Adding properties to an existing TypeScript type, like `req.auth` on Express's Request |
+| **Zod** | A library where you describe what valid data looks like, and it checks input against that description |
+| **Schema (validation)** | A description of valid input, e.g. "title is a string of 1–200 characters". Not the same as a database schema |
+| **Coercion** | Converting a value to another type before checking it, e.g. the text `"20"` to the number `20` |
+| **Mass assignment** | An attack where the client sends extra fields (like `organizationId`) hoping the server saves them blindly |
+| **URL parameter** | A variable part of a URL path, e.g. `:id` in `/api/tickets/:id` |
+| **Location header** | A response header telling the client where a newly created resource lives |
+| **Defense in depth** | Several independent layers of protection, so one mistake doesn't cause a disaster |

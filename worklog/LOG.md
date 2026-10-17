@@ -11,3 +11,4 @@ One line per finished task. Details live in [docs.md](../docs.md) and the Git hi
 | 5 | 2026-10-17 | `docs.md` learning notes created (`0c4f831`), chapter 18 added | Drizzle setup |
 | 6 | 2026-10-17 | Drizzle set up: hand-checked `schema.ts`, Drizzle migrations proven identical to live DB, tracking handed over, old runner removed | First API endpoint: `GET /api/tickets` |
 | 7 | 2026-10-17 | `GET /api/tickets` built (routes/controller/service, org-scoped, validated), Vitest + 13 tests on a separate test DB | Next ticket endpoints: `GET /api/tickets/:id`, `POST /api/tickets` |
+| 8 | 2026-10-17 | Zod validation, `GET /api/tickets/:id` (404 across orgs), `POST /api/tickets` (property ownership check), `X-User-Id` placeholder; 29 tests | Ticket status updates + assignment (`PATCH`), with role rules |

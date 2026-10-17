@@ -1,33 +1,46 @@
 import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
-import { pool } from "../src/db/index.js";
+import { db, pool } from "../src/db/index.js";
+import { tickets } from "../src/db/schema.js";
 import { createOrg, createTicket, resetDatabase } from "./helpers.js";
 
 const app = createApp();
+const NONEXISTENT_ID = "00000000-0000-0000-0000-000000000000";
 
 beforeEach(resetDatabase);
 afterAll(() => pool.end());
 
-describe("GET /api/tickets", () => {
-  it("returns 401 without an organization", async () => {
+type Titled = { title: string };
+
+describe("authentication placeholder", () => {
+  it("returns 401 without a user", async () => {
     const res = await request(app).get("/api/tickets");
 
     expect(res.status).toBe(401);
     expect(res.body.error.code).toBe("UNAUTHENTICATED");
   });
 
-  it("returns 400 when the organization id is not a UUID", async () => {
-    const res = await request(app).get("/api/tickets").set("X-Organization-Id", "not-a-uuid");
+  it("returns 400 when the user id is not a UUID", async () => {
+    const res = await request(app).get("/api/tickets").set("X-User-Id", "not-a-uuid");
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("VALIDATION_ERROR");
   });
 
+  it("returns 401 for a user that doesn't exist", async () => {
+    const res = await request(app).get("/api/tickets").set("X-User-Id", NONEXISTENT_ID);
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.message).toBe("Unknown user");
+  });
+});
+
+describe("GET /api/tickets", () => {
   it("returns an empty list when the organization has no tickets", async () => {
     const a = await createOrg("a");
 
-    const res = await request(app).get("/api/tickets").set("X-Organization-Id", a.org.id);
+    const res = await request(app).get("/api/tickets").set("X-User-Id", a.resident.id);
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ data: [] });
@@ -39,10 +52,10 @@ describe("GET /api/tickets", () => {
     await createTicket(a, { title: "A's ticket" });
     await createTicket(b, { title: "B's ticket" });
 
-    const res = await request(app).get("/api/tickets").set("X-Organization-Id", a.org.id);
+    const res = await request(app).get("/api/tickets").set("X-User-Id", a.resident.id);
 
     expect(res.status).toBe(200);
-    expect(res.body.data.map((t: { title: string }) => t.title)).toEqual(["A's ticket"]);
+    expect(res.body.data.map((t: Titled) => t.title)).toEqual(["A's ticket"]);
   });
 
   it("returns newest tickets first", async () => {
@@ -51,9 +64,9 @@ describe("GET /api/tickets", () => {
     await createTicket(a, { title: "new", createdAt: new Date("2026-03-01T00:00:00Z") });
     await createTicket(a, { title: "middle", createdAt: new Date("2026-02-01T00:00:00Z") });
 
-    const res = await request(app).get("/api/tickets").set("X-Organization-Id", a.org.id);
+    const res = await request(app).get("/api/tickets").set("X-User-Id", a.resident.id);
 
-    expect(res.body.data.map((t: { title: string }) => t.title)).toEqual(["new", "middle", "old"]);
+    expect(res.body.data.map((t: Titled) => t.title)).toEqual(["new", "middle", "old"]);
   });
 
   it("filters by status", async () => {
@@ -61,19 +74,17 @@ describe("GET /api/tickets", () => {
     await createTicket(a, { title: "open one" });
     await createTicket(a, { title: "resolved one", status: "resolved" });
 
-    const res = await request(app)
-      .get("/api/tickets?status=resolved")
-      .set("X-Organization-Id", a.org.id);
+    const res = await request(app).get("/api/tickets?status=resolved").set("X-User-Id", a.resident.id);
 
     expect(res.status).toBe(200);
-    expect(res.body.data.map((t: { title: string }) => t.title)).toEqual(["resolved one"]);
+    expect(res.body.data.map((t: Titled) => t.title)).toEqual(["resolved one"]);
   });
 
   it("respects the limit", async () => {
     const a = await createOrg("a");
     for (let i = 0; i < 3; i++) await createTicket(a, { title: `t${i}` });
 
-    const res = await request(app).get("/api/tickets?limit=2").set("X-Organization-Id", a.org.id);
+    const res = await request(app).get("/api/tickets?limit=2").set("X-User-Id", a.resident.id);
 
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(2);
@@ -82,28 +93,27 @@ describe("GET /api/tickets", () => {
   it.each(["0", "51", "abc", "1.5"])("rejects limit=%s", async (limit) => {
     const a = await createOrg("a");
 
-    const res = await request(app)
-      .get(`/api/tickets?limit=${limit}`)
-      .set("X-Organization-Id", a.org.id);
+    const res = await request(app).get(`/api/tickets?limit=${limit}`).set("X-User-Id", a.resident.id);
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("VALIDATION_ERROR");
+    expect(res.body.error.details[0].path).toBe("limit");
   });
 
   it("rejects an unknown status", async () => {
     const a = await createOrg("a");
 
-    const res = await request(app).get("/api/tickets?status=done").set("X-Organization-Id", a.org.id);
+    const res = await request(app).get("/api/tickets?status=done").set("X-User-Id", a.resident.id);
 
     expect(res.status).toBe(400);
-    expect(res.body.error.message).toContain("status must be one of");
+    expect(res.body.error.details[0].path).toBe("status");
   });
 
   it("returns ticket fields in camelCase with ISO timestamps", async () => {
     const a = await createOrg("a");
     const ticket = await createTicket(a, { title: "Broken light", priority: "high" });
 
-    const res = await request(app).get("/api/tickets").set("X-Organization-Id", a.org.id);
+    const res = await request(app).get("/api/tickets").set("X-User-Id", a.resident.id);
 
     expect(res.body.data[0]).toMatchObject({
       id: ticket.id,
@@ -116,5 +126,155 @@ describe("GET /api/tickets", () => {
       status: "open",
     });
     expect(res.body.data[0].createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
+  });
+});
+
+describe("GET /api/tickets/:id", () => {
+  it("returns the ticket", async () => {
+    const a = await createOrg("a");
+    const ticket = await createTicket(a, { title: "Broken window" });
+
+    const res = await request(app).get(`/api/tickets/${ticket.id}`).set("X-User-Id", a.resident.id);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ id: ticket.id, title: "Broken window" });
+  });
+
+  it("returns 404 for another organization's ticket", async () => {
+    const a = await createOrg("a");
+    const b = await createOrg("b");
+    const bTicket = await createTicket(b, { title: "B's secret ticket" });
+
+    const res = await request(app).get(`/api/tickets/${bTicket.id}`).set("X-User-Id", a.resident.id);
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("TICKET_NOT_FOUND");
+    expect(JSON.stringify(res.body)).not.toContain("B's secret ticket");
+  });
+
+  it("returns 404 for a ticket that doesn't exist", async () => {
+    const a = await createOrg("a");
+
+    const res = await request(app).get(`/api/tickets/${NONEXISTENT_ID}`).set("X-User-Id", a.resident.id);
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("TICKET_NOT_FOUND");
+  });
+
+  it("returns 400 for an id that isn't a UUID", async () => {
+    const a = await createOrg("a");
+
+    const res = await request(app).get("/api/tickets/123").set("X-User-Id", a.resident.id);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.details[0].path).toBe("id");
+  });
+});
+
+describe("POST /api/tickets", () => {
+  it("creates a ticket owned by the caller and their organization", async () => {
+    const a = await createOrg("a");
+
+    const res = await request(app)
+      .post("/api/tickets")
+      .set("X-User-Id", a.resident.id)
+      .send({ propertyId: a.property.id, title: "Leaking tap", description: "Kitchen sink" });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data).toMatchObject({
+      organizationId: a.org.id,
+      createdBy: a.resident.id,
+      propertyId: a.property.id,
+      title: "Leaking tap",
+      description: "Kitchen sink",
+      priority: "medium", // database default
+      status: "open",
+      assignedTo: null,
+    });
+    expect(res.headers.location).toBe(`/api/tickets/${res.body.data.id}`);
+  });
+
+  it("saves the ticket so it can be fetched afterwards", async () => {
+    const a = await createOrg("a");
+
+    const created = await request(app)
+      .post("/api/tickets")
+      .set("X-User-Id", a.resident.id)
+      .send({ propertyId: a.property.id, title: "No hot water", priority: "urgent" });
+    const fetched = await request(app).get(created.headers.location!).set("X-User-Id", a.resident.id);
+
+    expect(fetched.status).toBe(200);
+    expect(fetched.body.data).toMatchObject({ title: "No hot water", priority: "urgent" });
+  });
+
+  it("trims whitespace from the title", async () => {
+    const a = await createOrg("a");
+
+    const res = await request(app)
+      .post("/api/tickets")
+      .set("X-User-Id", a.resident.id)
+      .send({ propertyId: a.property.id, title: "   Broken door   " });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.title).toBe("Broken door");
+  });
+
+  it.each([
+    ["missing title", {}, "title"],
+    ["blank title", { title: "   " }, "title"],
+    ["title too long", { title: "x".repeat(201) }, "title"],
+    ["bad priority", { title: "ok", priority: "critical" }, "priority"],
+    ["bad propertyId", { title: "ok", propertyId: "nope" }, "propertyId"],
+  ])("rejects %s", async (_name, overrides, field) => {
+    const a = await createOrg("a");
+
+    const res = await request(app)
+      .post("/api/tickets")
+      .set("X-User-Id", a.resident.id)
+      .send({ propertyId: a.property.id, ...overrides });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("VALIDATION_ERROR");
+    expect(res.body.error.details.map((d: { path: string }) => d.path)).toContain(field);
+  });
+
+  it("rejects fields the server controls (organizationId, status, ...)", async () => {
+    const a = await createOrg("a");
+    const b = await createOrg("b");
+
+    const res = await request(app)
+      .post("/api/tickets")
+      .set("X-User-Id", a.resident.id)
+      .send({ propertyId: a.property.id, title: "Sneaky", organizationId: b.org.id, status: "closed" });
+
+    expect(res.status).toBe(400);
+    expect(await db.select().from(tickets)).toHaveLength(0);
+  });
+
+  it("rejects a property from another organization and saves nothing", async () => {
+    const a = await createOrg("a");
+    const b = await createOrg("b");
+
+    const res = await request(app)
+      .post("/api/tickets")
+      .set("X-User-Id", a.resident.id)
+      .send({ propertyId: b.property.id, title: "Cross-org" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.details).toEqual([{ path: "propertyId", message: "Property not found" }]);
+    expect(await db.select().from(tickets)).toHaveLength(0);
+  });
+
+  it("rejects a body that isn't a JSON object", async () => {
+    const a = await createOrg("a");
+
+    const res = await request(app)
+      .post("/api/tickets")
+      .set("X-User-Id", a.resident.id)
+      .set("Content-Type", "application/json")
+      .send("[1, 2, 3]");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("VALIDATION_ERROR");
   });
 });

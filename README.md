@@ -17,12 +17,16 @@ npm test                  # run the tests (uses a separate fixflow_test database
 
 ## API
 
-All `/api` routes are scoped to one organization. Until authentication is built, development requests pass it in a temporary `X-Organization-Id` header (disabled in production).
+All `/api` routes act as one user and are scoped to that user's organization. Until authentication is built, development requests identify the user with a temporary `X-User-Id` header (disabled in production). The organization and role are loaded from the database.
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Service and database status |
 | `GET` | `/api/tickets?status=&limit=` | List the organization's tickets, newest first (`limit` 1–50, default 20) |
+| `GET` | `/api/tickets/:id` | One ticket (404 if it doesn't exist or belongs to another organization) |
+| `POST` | `/api/tickets` | Create a ticket: `{ propertyId, title, description?, priority? }` → 201 |
+
+Errors always look like `{ "error": { "code", "message", "details"? } }`. Validation errors list each problem in `details` as `{ path, message }`.
 
 ### Database schema and migrations
 
