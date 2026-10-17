@@ -2021,6 +2021,19 @@ The session token is kept in **`localStorage`**, so a reload stays logged in. It
 - **Not yet checked by an automated browser test:** clicking through the pages. Done by hand for now. Component tests (e.g. with Testing Library) would be a good next step.
 - **A gotcha while testing:** port 5173 was already used by a different local app, so requests reached *that* app. Vite's `--strictPort` refused to share the port, and testing moved to another one.
 
+
+### Who can report tickets (a rule found while using the UI)
+
+Trying the frontend raised a question: *why can a manager create tickets?* The API allowed **every** role, because no rule had ever been decided. Looking closer revealed a **real bug**: a **technician** could create a ticket but then **not see it** (technicians only see tickets *assigned* to them), so the app showed "doesn't exist" right after creating it.
+
+**Decision:** residents, managers and admins can report tickets. Managers often log problems for residents (phone calls, shared areas like lobbies). **Technicians can't**: they work on tickets and ask a manager to log new issues.
+
+- `canCreateTicket()` in `tickets.policy.ts`, so the rule lives with all the others.
+- Enforced **on the server** (403 FORBIDDEN, nothing saved). The "New ticket" button is hidden for technicians, but hiding a button is only for a good experience, never security.
+- Documented in the OpenAPI file and README, with unit and API tests. Making the rule permissive again on purpose broke 2 tests.
+
+**Lesson:** using the product finds gaps that reading the code doesn't. Unclear rules ("who may do X?") should be **decided explicitly**, not left to whatever the code happens to allow.
+
 ---
 
 ## Glossary

@@ -14,7 +14,7 @@ import {
 } from "../../db/schema.js";
 import type { AuthContext } from "../../middleware/auth.js";
 import { HttpError } from "../../middleware/errors.js";
-import { canAssign, findTransition, isAssignable, ticketScope } from "./tickets.policy.js";
+import { canAssign, canCreateTicket, findTransition, isAssignable, ticketScope } from "./tickets.policy.js";
 import type { CreateTicketBody, ListTicketsQuery } from "./tickets.schemas.js";
 
 // SQL condition for "tickets this user may see": their organization, narrowed
@@ -95,6 +95,10 @@ async function getTicketOr404(auth: AuthContext, ticketId: string): Promise<Tick
 }
 
 export async function createTicket(auth: AuthContext, input: CreateTicketBody) {
+  if (!canCreateTicket(auth)) {
+    throw new HttpError(403, "FORBIDDEN", "Technicians can't report tickets. Ask a manager to log it.");
+  }
+
   // The database's composite foreign key would also reject a property from
   // another organization, but checking here gives the client a clear 400
   // instead of a database error.

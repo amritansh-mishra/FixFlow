@@ -5,6 +5,7 @@ import type { UserRole } from "../src/db/schema.js";
 import type { AuthContext } from "../src/middleware/auth.js";
 import {
   canAssign,
+  canCreateTicket,
   canViewTicket,
   findTransition,
   isAssignable,
@@ -24,12 +25,23 @@ const admin = as("root", "admin");
 
 describe("canAssign", () => {
   it.each([
-    ["manager", manager, true],
-    ["admin", admin, true],
-    ["technician", assignee, false],
-    ["resident", creator, false],
-  ])("%s → %s", (_name, auth, expected) => {
+    ["manager", true, manager],
+    ["admin", true, admin],
+    ["technician", false, assignee],
+    ["resident", false, creator],
+  ])("%s → %s", (_name, expected, auth) => {
     expect(canAssign(auth)).toBe(expected);
+  });
+});
+
+describe("canCreateTicket", () => {
+  it.each([
+    ["resident", true, creator],
+    ["manager", true, manager],
+    ["admin", true, admin],
+    ["technician", false, assignee],
+  ])("%s → %s", (_name, expected, auth) => {
+    expect(canCreateTicket(auth)).toBe(expected);
   });
 });
 

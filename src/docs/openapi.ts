@@ -291,9 +291,13 @@ export const openApiDocument = {
       post: {
         tags: ["Tickets"],
         operationId: "createTicket",
-        summary: "Report a new ticket",
+        summary: "Report a new ticket (residents, managers and admins)",
         requestBody: { required: true, content: json(fromZod(createTicketBody)) },
-        responses: { "201": { description: "Created", content: dataOf(ref("Ticket")) }, ...commonErrors },
+        responses: {
+          "201": { description: "Created", content: dataOf(ref("Ticket")) },
+          ...commonErrors,
+          "403": errorResponse("Technicians can't report tickets"),
+        },
       },
     },
     "/api/tickets/{id}": {

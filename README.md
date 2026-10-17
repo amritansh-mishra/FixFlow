@@ -140,6 +140,7 @@ open ──assign──▶ assigned ──start──▶ in_progress ──resol
 
 | Change | Who |
 |---|---|
+| report a ticket | resident, manager, admin (not technicians) |
 | assign / reassign (`open` or `assigned`) | manager, admin |
 | `assigned → in_progress`, `in_progress → resolved` | the assigned technician |
 | `resolved → closed`, `resolved → in_progress` (reopen) | the ticket's creator, manager, admin |

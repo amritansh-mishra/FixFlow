@@ -255,3 +255,33 @@ describe("POST /api/tickets", () => {
     expect(res.body.error.code).toBe("VALIDATION_ERROR");
   });
 });
+
+describe("who can report tickets", () => {
+  it.each(["resident", "manager", "admin"] as const)("a %s can", async (role) => {
+    const a = await createOrg("a");
+
+    const res = await request(app)
+      .post("/api/tickets")
+      .auth(a[role].token, { type: "bearer" })
+      .send({ propertyId: a.property.id, title: "Lobby light out" });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.createdBy).toBe(a[role].id);
+  });
+
+  it("a technician can't, and nothing is saved", async () => {
+    const a = await createOrg("a");
+
+    const res = await request(app)
+      .post("/api/tickets")
+      .auth(a.technician.token, { type: "bearer" })
+      .send({ propertyId: a.property.id, title: "Lobby light out" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toEqual({
+      code: "FORBIDDEN",
+      message: "Technicians can't report tickets. Ask a manager to log it.",
+    });
+    expect(await db.select().from(tickets)).toHaveLength(0);
+  });
+});

@@ -49,6 +49,14 @@ export function findTransition(from: TicketStatus, to: TicketStatus): Rule | und
   return TRANSITIONS[from]?.[to];
 }
 
+// Residents report problems; managers and admins also log them on residents'
+// behalf (phone calls, shared areas). Technicians work on tickets rather than
+// report them. Their scope only covers tickets assigned to them, so they
+// couldn't even see a ticket they had created.
+export function canCreateTicket(auth: AuthContext): boolean {
+  return auth.role !== "technician";
+}
+
 export function canAssign(auth: AuthContext): boolean {
   return isManager(auth);
 }

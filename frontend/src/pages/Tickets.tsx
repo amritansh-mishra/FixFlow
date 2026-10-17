@@ -67,9 +67,12 @@ export function TicketsPage() {
           <h1>Tickets</h1>
           <p className="muted">{scopeText}</p>
         </div>
-        <button className="button primary" onClick={() => setShowForm((v) => !v)}>
-          {showForm ? "Cancel" : "+ New ticket"}
-        </button>
+        {/* Technicians work on tickets but don't report them (same rule as the API). */}
+        {user?.role !== "technician" && (
+          <button className="button primary" onClick={() => setShowForm((v) => !v)}>
+            {showForm ? "Cancel" : "+ New ticket"}
+          </button>
+        )}
       </div>
 
       {showForm && (
