@@ -9,6 +9,7 @@ export default defineConfig({
     env: {
       NODE_ENV: "test",
       DATABASE_URL: testDatabaseUrl("app"),
+      CORS_ORIGINS: "http://localhost:5173",
     },
     // Test files share one database, so run them one at a time.
     fileParallelism: false,

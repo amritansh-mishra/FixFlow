@@ -32,7 +32,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 26. [A least-privilege database user](#26-a-least-privilege-database-user)
 27. [Deploying to Render](#27-deploying-to-render)
 28. [Comments, search, pagination, stats, API docs and CI](#28-comments-search-pagination-stats-api-docs-and-ci)
-29. [Glossary](#glossary)
+29. [The React frontend](#29-the-react-frontend)
+30. [Glossary](#glossary)
 
 ---
 
@@ -1967,6 +1968,61 @@ The **badge** at the top of the README shows green or red for the latest run. It
 
 ---
 
+## 29. The React frontend
+
+A basic web app in `frontend/`, deployed **separately** from the API as a Render **Static Site**.
+
+### Stack and why
+
+- **React 19:** the most common UI library, so it's familiar to reviewers.
+- **Vite:** a fast dev server and build tool. `npm run build` turns the app into plain HTML, CSS and JS files (`dist/`, ~74 KB of JS after compression) that any static host can serve.
+- **No extra libraries:** no router package, no CSS framework, no data-fetching library. A tiny **hash router** (`#/tickets/<id>`) and plain CSS keep it small and easy to read. Hash URLs also work on any static host without server rewrite rules.
+- **Versions are pinned** to releases at least two weeks old (React 19.3.0, Vite 8.3.2).
+
+### Pages
+
+| Page | What it does |
+|---|---|
+| Login | Organization, email and password, plus clickable demo accounts |
+| Tickets | Search, status and priority filters, "Load more" (cursor pagination), and a "New ticket" form with a property dropdown |
+| Ticket detail | Details, **role-aware action buttons**, assigning (managers), comments, and a history timeline |
+| Dashboard | Managers only: totals, status bars, priority counts, technician workload |
+
+### How the pieces fit
+
+- **`api.ts`:** one `api()` function for every request. It adds the `Authorization: Bearer` header, turns error responses into an `ApiError` (with the field `details` from Zod), and logs the user out if a session expires (any `401`).
+- **`auth.tsx`:** a React **context** holds the logged-in user and token, so any page can call `useAuth()`. On reload it re-checks the stored session with `GET /api/auth/me`.
+- **Buttons mirror the server's rules:** `availableActions()` follows the same rules as `tickets.policy.ts`, so a technician only sees "Start work" on their own assigned tickets. That's **only for a good experience**: the server still checks every action, so a modified browser can't bypass anything.
+
+### Deploying two services: CORS
+
+The frontend (`https://fixflow-web…`) and the API (`https://fixflow-api…`) are different **origins**, meaning different addresses. Browsers block a page from reading responses from another origin, unless that server says the origin is allowed. This is **CORS** (Cross-Origin Resource Sharing).
+
+- `src/middleware/cors.ts` allows only origins listed in **`CORS_ORIGINS`**.
+- Before a `POST` with JSON or an `Authorization` header, the browser sends an **`OPTIONS` "preflight"** request asking "may I?". The API answers `204` with the allowed methods and headers.
+- **`Access-Control-Expose-Headers: Location, Retry-After`** lets the frontend read those response headers.
+- **`Vary: Origin`** tells caches that the response depends on who's asking.
+- **Tested:** the allowed origin gets the header, preflight works, and an unknown origin gets nothing.
+
+**In development there's no CORS at all:** Vite's dev server **forwards** `/api` requests to `localhost:3000`, so the browser only ever talks to one origin.
+
+**`VITE_API_URL` is baked in at build time.** Vite replaces `import.meta.env.VITE_API_URL` in the code while building, so changing it on Render means **rebuilding** the frontend, not just restarting it.
+
+### Where the token is stored, and the tradeoff
+
+The session token is kept in **`localStorage`**, so a reload stays logged in. It's simple and works across origins. The risk: if an attacker ever got JavaScript to run on the page (**XSS**, cross-site scripting), it could read the token. React escapes everything it renders by default, which helps a lot. The stronger option is an **httpOnly cookie** (JavaScript can't read it at all), but across two origins that needs CSRF protection and cookie settings. It's planned as a later upgrade.
+
+### How it was checked
+
+- `tsc --noEmit` (strict TypeScript) and `vite build` both pass. CI now has a **frontend job** doing the same on every push.
+- **Network-level checks** against a throwaway database with demo data:
+  - Dev mode: the page loads, and login, tickets and stats work **through the Vite proxy**.
+  - Production-like: the built JS contains the API URL, the preflight returns `204` with the right origin, and other origins are refused.
+- **Not yet checked by an automated browser test:** clicking through the pages. Done by hand for now. Component tests (e.g. with Testing Library) would be a good next step.
+- **A gotcha while testing:** port 5173 was already used by a different local app, so requests reached *that* app. Vite's `--strictPort` refused to share the port, and testing moved to another one.
+
+---
+
 ## Glossary
 
 | Term | Simple meaning |
@@ -2069,3 +2125,10 @@ The **badge** at the top of the README shows green or red for the latest run. It
 | **Swagger UI** | A web page generated from an OpenAPI document that lets you try the API in the browser |
 | **CI (continuous integration)** | Automatically building and testing every change on a clean machine |
 | **GitHub Actions** | GitHub's built-in service for running CI workflows |
+| **Static site** | A website made only of files (HTML, CSS, JS) served as-is, with no server code |
+| **Origin** | Scheme + host + port of a URL, e.g. `https://fixflow-web.onrender.com`. Browsers isolate origins from each other |
+| **CORS** | Cross-Origin Resource Sharing: headers a server sends to let pages from other origins read its responses |
+| **Preflight request** | The browser's automatic `OPTIONS` request asking a server whether a cross-origin request is allowed |
+| **Dev proxy** | The dev server forwarding API requests to the backend, so the browser sees one origin |
+| **React context** | A way to share values (like the logged-in user) with every component without passing them down by hand |
+| **XSS** | Cross-site scripting: an attacker getting their JavaScript to run on your page |

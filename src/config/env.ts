@@ -45,10 +45,20 @@ function parseDatabaseUrl(raw: string): string {
   return raw;
 }
 
+function parseOrigins(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((origin) => origin.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+}
+
 export const env = Object.freeze({
   nodeEnv: parseNodeEnv(process.env.NODE_ENV),
   port: parsePort(process.env.PORT),
   databaseUrl: parseDatabaseUrl(required("DATABASE_URL")),
+  // Browser origins allowed to call the API (the frontend), comma-separated.
+  corsOrigins: parseOrigins(process.env.CORS_ORIGINS),
 });
 
 export const isProduction = env.nodeEnv === "production";

@@ -6,7 +6,7 @@ A multi-tenant REST API for maintenance and work-order management. FixFlow repla
 
 A resident reports a leaking tap, a manager assigns a technician, the technician updates progress, and the resident confirms the fix. Every step is recorded.
 
-**Live API:** `https://<your-service>.onrender.com` · **Interactive docs:** `https://<your-service>.onrender.com/docs`
+**Live app:** `https://<frontend>.onrender.com` · **API:** `https://<api>.onrender.com` · **Interactive API docs:** `https://<api>.onrender.com/docs`
 (free tier: the first request after a while can take ~1 minute while the server wakes up)
 
 ## Highlights
@@ -23,7 +23,9 @@ A resident reports a leaking tap, a manager assigns a technician, the technician
 - **Interactive API docs:** OpenAPI 3.1 generated from the same Zod schemas used for validation, with Swagger UI at `/docs`.
 - **196 automated tests** (Vitest + Supertest) against a real PostgreSQL database, including a deterministic race-condition test. They run in **GitHub Actions CI** on every push.
 
-**Tech stack:** TypeScript, Node.js 24, Express 5, PostgreSQL, Drizzle ORM, Zod, Vitest, OpenAPI/Swagger, GitHub Actions. Deployed on Render.
+**Tech stack:** TypeScript, Node.js 24, Express 5, PostgreSQL, Drizzle ORM, Zod, Vitest, OpenAPI/Swagger, GitHub Actions · React 19 + Vite frontend · deployed on Render.
+
+**Frontend** (`frontend/`): log in, browse and search tickets, report problems, assign technicians, move tickets through the workflow with role-aware buttons, comment, see each ticket's history, and a manager dashboard.
 
 ## Try the demo
 
@@ -49,10 +51,17 @@ curl $API/api/tickets -H "Authorization: Bearer <token>"
 
 ## Deploying to Render
 
+`render.yaml` creates three things: the API (`fixflow-api`), the frontend (`fixflow-web`, a static site) and a PostgreSQL database.
+
 1. Push this repository to GitHub.
-2. In the Render dashboard: **New → Blueprint**, then pick the repository. `render.yaml` creates the web service and a PostgreSQL database.
-3. When asked, set `DEMO_PASSWORD` (at least 12 characters). It becomes the password of the demo accounts.
-4. Every deploy runs migrations, seeds the demo organization once, then starts the server (`npm run start:prod`).
+2. In the Render dashboard: **New → Blueprint**, then pick the repository.
+3. When asked, set:
+   - `DEMO_PASSWORD` (at least 12 characters): the password of the demo accounts.
+   - `CORS_ORIGINS`: the frontend's URL, e.g. `https://fixflow-web.onrender.com`.
+   - `VITE_API_URL`: the API's URL, e.g. `https://fixflow-api.onrender.com`.
+
+   The URLs are shown once the services are created. If you don't know them yet, enter a placeholder, then fix both in each service's **Environment** tab and redeploy. The frontend reads `VITE_API_URL` at build time.
+4. Every API deploy runs migrations, seeds the demo organization once, then starts the server (`npm run start:prod`).
 
 ## Local development
 
@@ -64,6 +73,14 @@ npm install
 npm run db:migrate        # apply database migrations (add -- --status to preview)
 npm run dev               # start the API with auto-reload
 npm test                  # run the tests (uses a separate fixflow_test database)
+```
+
+Frontend, in a second terminal (the API must be running on port 3000):
+
+```bash
+cd frontend
+npm install
+npm run dev               # http://localhost:5173. Vite forwards /api to the local API, so no CORS setup is needed
 ```
 
 ## API

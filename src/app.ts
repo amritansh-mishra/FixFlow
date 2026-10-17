@@ -1,6 +1,7 @@
 import express from "express";
 import { isProduction } from "./config/env.js";
 import { docsRouter } from "./docs/docs.routes.js";
+import { cors } from "./middleware/cors.js";
 import { openApiDocument } from "./docs/openapi.js";
 import { pool } from "./db/index.js";
 import { errorHandler, notFoundHandler } from "./middleware/errors.js";
@@ -18,6 +19,7 @@ export function createApp() {
   // proxy hop so req.ip is the real client address; otherwise every user
   // would share the proxy's IP and its login rate limit.
   if (isProduction) app.set("trust proxy", 1);
+  app.use(cors);
   app.use(express.json({ limit: "100kb" }));
 
   // A short index for anyone opening the API in a browser.

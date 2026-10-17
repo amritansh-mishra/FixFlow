@@ -1,0 +1,119 @@
+// Typed client for the FixFlow API.
+
+export type Role = "resident" | "technician" | "manager" | "admin";
+export type Status = "open" | "assigned" | "in_progress" | "resolved" | "closed";
+export type Priority = "low" | "medium" | "high" | "urgent";
+
+export const STATUSES: Status[] = ["open", "assigned", "in_progress", "resolved", "closed"];
+export const PRIORITIES: Priority[] = ["low", "medium", "high", "urgent"];
+
+export interface User {
+  id: string;
+  organizationId: string;
+  name: string;
+  email: string;
+  role: Role;
+}
+
+export interface Ticket {
+  id: string;
+  propertyId: string;
+  createdBy: string;
+  assignedTo: string | null;
+  title: string;
+  description: string | null;
+  priority: Priority;
+  status: Status;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TicketEvent {
+  id: string;
+  actorId: string;
+  type: "created" | "assigned" | "status_changed" | "commented";
+  fromStatus: Status | null;
+  toStatus: Status | null;
+  assignedTo: string | null;
+  createdAt: string;
+}
+
+export interface Comment {
+  id: string;
+  body: string;
+  createdAt: string;
+  author: { id: string; name: string; role: Role };
+}
+
+export interface Property {
+  id: string;
+  name: string;
+  address: string | null;
+}
+
+export interface Stats {
+  total: number;
+  byStatus: Record<Status, number>;
+  byPriority: Record<Priority, number>;
+  averageResolutionHours: number | null;
+  resolvedTickets: number;
+  technicians: { id: string; name: string; active: number; completed: number }[];
+}
+
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+    readonly details: { path: string; message: string }[] = [],
+  ) {
+    super(message);
+  }
+}
+
+// Empty in development (Vite forwards /api to the local backend).
+const BASE_URL = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+
+// Called when the server says the session is no longer valid.
+let onUnauthorized: () => void = () => {};
+export function setUnauthorizedHandler(handler: () => void) {
+  onUnauthorized = handler;
+}
+
+export async function api<T>(
+  path: string,
+  options: { method?: string; body?: unknown; token?: string | null } = {},
+): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (options.body !== undefined) headers["Content-Type"] = "application/json";
+  if (options.token) headers.Authorization = `Bearer ${options.token}`;
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      method: options.method ?? "GET",
+      headers,
+      body: options.body === undefined ? null : JSON.stringify(options.body),
+    });
+  } catch {
+    throw new ApiError(0, "NETWORK_ERROR", "Can't reach the server. It may be waking up; try again in a moment.");
+  }
+
+  if (res.status === 204) return undefined as T;
+  const json = await res.json().catch(() => null);
+  if (!res.ok) {
+    const error = json?.error ?? {};
+    if (res.status === 401 && options.token) onUnauthorized();
+    throw new ApiError(res.status, error.code ?? "ERROR", error.message ?? res.statusText, error.details ?? []);
+  }
+  return json as T;
+}
+
+// Turns an error into one line for the screen, including field details.
+export function errorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    const fields = err.details.map((d) => (d.path ? `${d.path}: ${d.message}` : d.message));
+    return fields.length ? `${err.message} (${fields.join("; ")})` : err.message;
+  }
+  return "Something went wrong";
+}

@@ -1,4 +1,4 @@
-# Render Blueprint: one web service + one PostgreSQL database.
+# Render Blueprint: the API (web service), the frontend (static site) and a PostgreSQL database.
 # Deploy: Render dashboard → New → Blueprint → pick this repository.
 databases:
   - name: fixflow-db
@@ -27,4 +27,20 @@ services:
         value: "true"
       # Password for the demo accounts; you're asked for it when deploying.
       - key: DEMO_PASSWORD
+        sync: false
+      # The frontend's URL (e.g. https://fixflow-web.onrender.com), so browsers may call the API.
+      - key: CORS_ORIGINS
+        sync: false
+
+  # The React frontend, built once and served as static files.
+  - type: web
+    name: fixflow-web
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      # The API's URL (e.g. https://fixflow-api.onrender.com). Baked in at build time,
+      # so redeploy the frontend after changing it.
+      - key: VITE_API_URL
         sync: false
