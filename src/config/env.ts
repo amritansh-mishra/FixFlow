@@ -1,0 +1,54 @@
+import "dotenv/config";
+
+// Validate required environment variables once at startup so the app fails
+// fast with a clear message instead of misbehaving later.
+
+const NODE_ENVS = ["development", "test", "production"] as const;
+type NodeEnv = (typeof NODE_ENVS)[number];
+
+function required(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  return value;
+}
+
+function parsePort(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return 3000;
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid PORT: must be an integer between 1 and 65535`);
+  }
+  return port;
+}
+
+function parseNodeEnv(raw: string | undefined): NodeEnv {
+  const value = raw ?? "development";
+  if (!(NODE_ENVS as readonly string[]).includes(value)) {
+    throw new Error(`Invalid NODE_ENV: must be one of ${NODE_ENVS.join(", ")}`);
+  }
+  return value as NodeEnv;
+}
+
+function parseDatabaseUrl(raw: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    // Never echo the value: it contains the database password.
+    throw new Error("Invalid DATABASE_URL: not a valid URL");
+  }
+  if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
+    throw new Error("Invalid DATABASE_URL: must start with postgres:// or postgresql://");
+  }
+  return raw;
+}
+
+export const env = Object.freeze({
+  nodeEnv: parseNodeEnv(process.env.NODE_ENV),
+  port: parsePort(process.env.PORT),
+  databaseUrl: parseDatabaseUrl(required("DATABASE_URL")),
+});
+
+export const isProduction = env.nodeEnv === "production";

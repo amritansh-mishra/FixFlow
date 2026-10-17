@@ -6,12 +6,13 @@
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "build": "rm -rf dist && tsc",
     "start": "node dist/server.js"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "dependencies": {
     "dotenv": "^18.0.4",
     "express": "^5.2.1",
@@ -19,9 +20,12 @@
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
-    "@types/node": "^26.6.3",
+    "@types/node": "^24.19.2",
     "@types/pg": "^8.23.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=24"
   }
 }
