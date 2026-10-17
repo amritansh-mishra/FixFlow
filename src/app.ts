@@ -1,6 +1,7 @@
 import express from "express";
 import { pool } from "./db/index.js";
 import { errorHandler, notFoundHandler } from "./middleware/errors.js";
+import { ticketsRouter } from "./modules/tickets/tickets.routes.js";
 
 // Builds the Express app without starting a listener, so tests can import it.
 export function createApp() {
@@ -24,6 +25,8 @@ export function createApp() {
       res.status(503).json({ status: "degraded", database: "unreachable", timestamp });
     }
   });
+
+  app.use("/api/tickets", ticketsRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

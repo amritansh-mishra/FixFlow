@@ -12,7 +12,17 @@ cp .env.example .env      # then set DATABASE_URL
 npm install
 npm run db:migrate        # apply database migrations (add -- --status to preview)
 npm run dev               # start the API with auto-reload
+npm test                  # run the tests (uses a separate fixflow_test database)
 ```
+
+## API
+
+All `/api` routes are scoped to one organization. Until authentication is built, development requests pass it in a temporary `X-Organization-Id` header (disabled in production).
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/health` | Service and database status |
+| `GET` | `/api/tickets?status=&limit=` | List the organization's tickets, newest first (`limit` 1–50, default 20) |
 
 ### Database schema and migrations
 

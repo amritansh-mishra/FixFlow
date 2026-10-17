@@ -23,7 +23,9 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 17. [Git: commits, pushes and viewing diffs](#17-git-commits-pushes-and-viewing-diffs)
 18. [Why we wrote our own baseline before switching to Drizzle](#18-why-we-wrote-our-own-baseline-before-switching-to-drizzle)
 19. [Setting up Drizzle in FixFlow](#19-setting-up-drizzle-in-fixflow)
-20. [Glossary](#glossary)
+20. [The first endpoint: GET /api/tickets](#20-the-first-endpoint-get-apitickets)
+21. [Automated tests](#21-automated-tests)
+22. [Glossary](#glossary)
 
 ---
 
@@ -742,6 +744,248 @@ There is deliberately **no** `db:push` script (chapter 16).
 
 ---
 
+## 20. The first endpoint: GET /api/tickets
+
+### What it does
+
+```
+GET /api/tickets                     → newest 20 tickets of my organization
+GET /api/tickets?status=open         → only open ones
+GET /api/tickets?limit=5             → only 5
+```
+
+Response:
+
+```json
+{ "data": [ { "id": "…", "title": "Leaking bathroom tap", "status": "open", "priority": "high", "createdAt": "2026-09-29T07:47:50.336Z", … } ] }
+```
+
+Successful responses wrap results in `"data"`, and errors use `"error"` (chapter 5). The frontend always knows where to look.
+
+### Three layers: routes → controller → service
+
+One request passes through three files, each with **one job**:
+
+```
+Request: GET /api/tickets?status=open
+   │
+   ▼
+tickets.routes.ts      "Which function handles GET /api/tickets?"         (the map)
+   │
+   ▼
+tickets.controller.ts  "Read the query, check it's valid, send the reply" (the waiter)
+   │
+   ▼
+tickets.service.ts     "Fetch the tickets from the database"              (the kitchen)
+```
+
+**Restaurant analogy:**
+- The **menu** (routes) lists what you can order and who handles it.
+- The **waiter** (controller) takes your order, checks it makes sense ("we don't have 'done' status, sir"), and brings the food back.
+- The **kitchen** (service) cooks. It never talks to customers.
+
+**Why split it?**
+- **The service knows nothing about HTTP.** Later, a background job (e.g. "email managers about urgent tickets") can call `listTickets()` directly, with no fake request needed.
+- **The controller has no SQL.** If the database code changes, the HTTP code doesn't.
+- **Each file is small** and easy to find.
+
+### Feature folders (`src/modules/tickets/`)
+
+The files are grouped **by feature** instead of by type:
+
+```
+src/modules/tickets/          ← everything about tickets in one place
+  tickets.routes.ts
+  tickets.controller.ts
+  tickets.service.ts
+src/modules/properties/       ← later
+src/modules/users/            ← later
+```
+
+The alternative is `routes/`, `controllers/`, `services/` folders, which spreads one feature across three places. Feature folders are what a **modular monolith** uses: one app, organized into self-contained modules. If a module ever needed to become its own service, it's already separated.
+
+### The service: the query
+
+```ts
+db.select().from(tickets)
+  .where(and(
+    eq(tickets.organizationId, organizationId),           // ALWAYS: the tenant boundary
+    options.status ? eq(tickets.status, options.status) : undefined,  // optional filter
+  ))
+  .orderBy(desc(tickets.createdAt), desc(tickets.id))
+  .limit(options.limit);
+```
+
+- **The organization filter is never optional.** It's what stops Hostel A seeing Hostel B's tickets.
+- `and()` **skips `undefined`**, which is a neat way to make a filter optional.
+- **`desc(tickets.id)` as a tie-breaker.** If two tickets have the exact same `createdAt`, the order could change between requests. Adding a second sort column makes it **stable**: always the same order.
+- This query uses the `idx_tickets_org_status` index from chapter 10.
+
+### The controller: validating input
+
+**Never trust input from a request.** Anyone can type any URL.
+
+```ts
+function parseLimit(raw: unknown): number {
+  if (raw === undefined) return DEFAULT_LIMIT;            // not given → 20
+  const limit = typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : NaN;
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT) {
+    throw new HttpError(400, "VALIDATION_ERROR", `limit must be an integer from 1 to ${MAX_LIMIT}`);
+  }
+  return limit;
+}
+```
+
+- `raw` is typed **`unknown`**, because query values can be a string, an array (`?limit=1&limit=2`), or missing. `unknown` forces us to check before using it.
+- `/^\d+$/` means "only digits", which rejects `abc`, `1.5`, `-3`.
+- **Why a maximum (50)?** Without one, `?limit=1000000` could make the server load a million rows: slow for everyone, and an easy attack.
+- Bad input gives a **400** with a clear message, and the error handler from chapter 5 formats it.
+
+`parseStatus` checks the value against `TICKET_STATUSES`, **the same list `schema.ts` uses** (chapter 19). One list, used everywhere.
+
+Later, the **Zod** library will replace these hand-written checks. Writing them by hand first shows what Zod does.
+
+### The temporary organization header ⚠️
+
+The API needs to know **which organization** is asking. That should come from a **verified login**, which doesn't exist yet (Phase 3).
+
+For now, `src/middleware/auth.ts` reads an `X-Organization-Id` header:
+
+```bash
+curl -H "X-Organization-Id: db8896ac-…" localhost:3000/api/tickets
+```
+
+**This is not secure.** Anyone can send any header and see any organization's tickets. So:
+- It's **clearly marked TEMPORARY** in the code.
+- It **refuses to work in production** (`NODE_ENV=production` always returns 401).
+- In Phase 3, the organization will come from the logged-in user, and the header will be deleted.
+
+It puts the result on `req.auth`, and the controller reads it with `getAuth(req)`. When real login arrives, **only the middleware changes**. The controller and service stay the same.
+
+**TypeScript trick (declaration merging):** Express's `Request` type doesn't have an `auth` property, so we **add one**:
+
+```ts
+declare global {
+  namespace Express {
+    interface Request { auth?: AuthContext; }
+  }
+}
+```
+
+### Small things worth knowing
+
+- **Express 5's `Router`** is a mini-app for one feature: `ticketsRouter.get("/", …)`, mounted with `app.use("/api/tickets", ticketsRouter)`, answers `GET /api/tickets`.
+- `ticketsRouter.use(requireOrganization)` runs the check for **every** ticket route, so it can't be forgotten on a new one.
+- The `npm audit` warning (4 moderate) is an old `esbuild` inside `drizzle-kit`. It affects esbuild's development web server, which we never run, and is development-only. Worth reading what an audit warning actually affects before panicking.
+
+---
+
+## 21. Automated tests
+
+### Why test?
+
+Without tests, the only way to know the API works is to try it by hand after every change. That gets slow and easy to forget. **Automated tests** check it in about 2 seconds with `npm test`.
+
+**The most important test** in this project:
+
+```ts
+it("only returns tickets from the caller's organization", async () => {
+  const a = await createOrg("a");
+  const b = await createOrg("b");
+  await createTicket(a, { title: "A's ticket" });
+  await createTicket(b, { title: "B's ticket" });
+
+  const res = await request(app).get("/api/tickets").set("X-Organization-Id", a.org.id);
+
+  expect(res.body.data.map((t) => t.title)).toEqual(["A's ticket"]);
+});
+```
+
+If anyone ever breaks the organization filter, **this test fails immediately**, before the bug reaches real users.
+
+### The tools
+
+| Tool | Job |
+|---|---|
+| **Vitest** | Runs the tests and reports pass or fail |
+| **Supertest** | Sends fake HTTP requests to the app, with no real server or port needed (this is why `createApp()` was split out in chapter 3) |
+
+### The shape of a test: Arrange, Act, Assert
+
+Every test follows the same three steps:
+
+```ts
+it("filters by status", async () => {
+  // Arrange: set up the situation
+  const a = await createOrg("a");
+  await createTicket(a, { title: "open one" });
+  await createTicket(a, { title: "resolved one", status: "resolved" });
+
+  // Act: do the thing being tested
+  const res = await request(app).get("/api/tickets?status=resolved").set("X-Organization-Id", a.org.id);
+
+  // Assert: check the result
+  expect(res.status).toBe(200);
+  expect(res.body.data.map((t) => t.title)).toEqual(["resolved one"]);
+});
+```
+
+- `describe(...)` groups related tests.
+- `it(...)` is one test, named as a sentence: "it filters by status".
+- `expect(x).toBe(y)` means "x must equal y, or the test fails".
+- `it.each(["0", "51", "abc", "1.5"])` runs the **same test with different inputs**, giving 4 tests from one block.
+
+### A separate test database
+
+Tests create and delete data constantly. **They must never touch the real database.**
+
+1. **`tests/global-setup.ts`** runs once before all tests. It **deletes and recreates** a database called `fixflow_test`, then runs the Drizzle migrations on it. Every run starts from exactly the schema in `drizzle/`, which also proves the migrations work.
+2. **`vitest.config.ts`** sets `DATABASE_URL` to `fixflow_test` for the tests, so the app connects there.
+3. **`beforeEach(resetDatabase)`** empties all tables before **each** test (`TRUNCATE`), so tests can't affect each other.
+4. **Safety net:** `resetDatabase()` first checks `current_database()` and **refuses** to wipe anything that isn't `fixflow_test`.
+
+**Integration tests vs unit tests:**
+- A **unit test** checks one small function on its own, with no database.
+- An **integration test** checks several parts working together: HTTP, then controller, service, Drizzle, and a real PostgreSQL.
+
+Ours are integration tests. They're a bit slower but catch far more real bugs, like a wrong SQL query or a missing index name.
+
+### Test helpers
+
+`tests/helpers.ts` has small functions that create test data:
+
+```ts
+const a = await createOrg("a");                        // org + resident + property
+await createTicket(a, { title: "x", status: "resolved" });  // ticket with overrides
+```
+
+Tests stay short and readable, and focus on **what's different** in each one.
+
+### Does the test actually work? Break the code on purpose
+
+A test that always passes is useless. To check the tests, I **deleted the organization filter** from the service, simulating a serious security bug, and ran them:
+
+```
+× only returns tickets from the caller's organization
+Tests  1 failed | 12 passed (13)
+```
+
+The right test caught it. After restoring the code, all 13 passed again. **Make it a habit:** when you write a test, briefly break the code to see the test fail. (Doing this systematically is called **mutation testing**.)
+
+### Build vs type-check: two tsconfig files
+
+- **`tsconfig.json`** is used by VS Code and `npm run typecheck`. It checks **everything**: `src/`, `tests/`, config files.
+- **`tsconfig.build.json`** is used by `npm run build`. It compiles **only `src/`** into `dist/`, so tests never ship to production.
+
+### Commands
+
+```bash
+npm test             # run all tests once
+npm run test:watch   # re-run tests automatically when you save a file
+```
+
+---
+
 ## Glossary
 
 | Term | Simple meaning |
@@ -775,3 +1019,11 @@ There is deliberately **no** `db:push` script (chapter 16).
 | **Custom migration** | A migration you write by hand because the tool can't generate it (e.g. triggers) |
 | **Smoke test** | A quick check that the basic features work, before deeper testing |
 | **Handover** | Moving migration tracking from one tool to another without re-running anything |
+| **Layer (routes / controller / service)** | Splitting a request's handling into the URL map, the HTTP handling, and the business logic and database work |
+| **Modular monolith** | One app, organized into self-contained feature modules |
+| **Input validation** | Checking request data is the right type and range before using it |
+| **Integration test** | A test that checks several parts working together (HTTP, code, real database) |
+| **Unit test** | A test that checks one small function on its own |
+| **Arrange, Act, Assert** | The three steps of a test: set up, do the thing, check the result |
+| **Mutation testing** | Breaking code on purpose to make sure the tests notice |
+| **Declaration merging** | Adding properties to an existing TypeScript type, like `req.auth` on Express's Request |

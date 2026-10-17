@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "typecheck": "tsc --noEmit",
-    "build": "rm -rf dist && tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
@@ -26,9 +28,12 @@
     "@types/express": "^5.0.6",
     "@types/node": "^24.19.2",
     "@types/pg": "^8.23.1",
+    "@types/supertest": "^7.2.1",
     "drizzle-kit": "^0.31.11",
+    "supertest": "^7.3.1",
     "tsx": "^4.23.15",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
   },
   "engines": {
     "node": ">=24"
