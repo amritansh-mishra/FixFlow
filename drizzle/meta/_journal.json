@@ -36,6 +36,13 @@
       "when": 1792256459700,
       "tag": "0004_app_role_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792260651355,
+      "tag": "0005_ticket_comments",
+      "breakpoints": true
     }
   ]
 }

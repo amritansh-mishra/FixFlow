@@ -6,6 +6,7 @@ import { validate } from "../../lib/validate.js";
 import { getAuth } from "../../middleware/auth.js";
 import { HttpError } from "../../middleware/errors.js";
 import {
+  addCommentBody,
   assignTicketBody,
   changeStatusBody,
   createTicketBody,
@@ -13,11 +14,13 @@ import {
   ticketIdParams,
 } from "./tickets.schemas.js";
 import {
+  addComment,
   assignTicket,
   changeTicketStatus,
   createTicket,
   getTicket,
   getTicketHistory,
+  listComments,
   listTickets,
 } from "./tickets.service.js";
 
@@ -77,4 +80,23 @@ export const ticketHistoryHandler: RequestHandler = async (req, res) => {
 
   const events = await getTicketHistory(auth, id);
   res.status(200).json({ data: events });
+};
+
+// GET /api/tickets/:id/comments
+export const listCommentsHandler: RequestHandler = async (req, res) => {
+  const auth = getAuth(req);
+  const { id } = validate(ticketIdParams, req.params, "ticket id");
+
+  const comments = await listComments(auth, id);
+  res.status(200).json({ data: comments });
+};
+
+// POST /api/tickets/:id/comments
+export const addCommentHandler: RequestHandler = async (req, res) => {
+  const auth = getAuth(req);
+  const { id } = validate(ticketIdParams, req.params, "ticket id");
+  const { body } = validate(addCommentBody, req.body, "request body");
+
+  const comment = await addComment(auth, id, body);
+  res.status(201).json({ data: comment });
 };

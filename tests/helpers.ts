@@ -26,7 +26,7 @@ export async function resetDatabase() {
   if (rows[0]?.name !== TEST_DB_NAME) {
     throw new Error(`Refusing to reset database "${rows[0]?.name}"`);
   }
-  await adminDb.execute(sql`TRUNCATE sessions, ticket_events, tickets, properties, users, organizations CASCADE`);
+  await adminDb.execute(sql`TRUNCATE sessions, ticket_comments, ticket_events, tickets, properties, users, organizations CASCADE`);
 }
 
 // Creates a user and logs them in, so tests can send `.auth(user.token, { type: "bearer" })`.

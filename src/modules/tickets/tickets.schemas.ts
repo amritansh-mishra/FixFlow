@@ -37,3 +37,8 @@ export const assignTicketBody = z.strictObject({
 export const changeStatusBody = z.strictObject({
   status: z.enum(TICKET_STATUSES),
 });
+
+// POST /api/tickets/:id/comments
+export const addCommentBody = z.strictObject({
+  body: z.string().trim().min(1).max(2000),
+});

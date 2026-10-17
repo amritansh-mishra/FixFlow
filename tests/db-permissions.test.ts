@@ -48,6 +48,8 @@ describe.skipIf(!usingRestrictedAppRole())("the app's database role", () => {
     ["rewrite history", sql`UPDATE ticket_events SET to_status = 'closed'`],
     ["delete history", sql`DELETE FROM ticket_events`],
     ["extend a session", sql`UPDATE sessions SET expires_at = now() + interval '1 year'`],
+    ["edit a comment", sql`UPDATE ticket_comments SET body = 'edited'`],
+    ["delete a comment", sql`DELETE FROM ticket_comments`],
   ])("can't %s", async (_name, query) => {
     await createTicket(await createOrg("a"));
 

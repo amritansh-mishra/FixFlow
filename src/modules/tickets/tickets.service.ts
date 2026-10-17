@@ -5,6 +5,7 @@ import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import {
   properties,
+  ticketComments,
   ticketEvents,
   tickets,
   users,
@@ -204,4 +205,47 @@ export async function getTicketHistory(auth: AuthContext, ticketId: string) {
     .from(ticketEvents)
     .where(and(eq(ticketEvents.organizationId, auth.organizationId), eq(ticketEvents.ticketId, ticketId)))
     .orderBy(asc(ticketEvents.createdAt), asc(ticketEvents.id));
+}
+
+const commentFields = {
+  id: ticketComments.id,
+  ticketId: ticketComments.ticketId,
+  body: ticketComments.body,
+  createdAt: ticketComments.createdAt,
+  author: { id: users.id, name: users.name, role: users.role },
+};
+
+export async function listComments(auth: AuthContext, ticketId: string) {
+  await getTicketOr404(auth, ticketId);
+  return db
+    .select(commentFields)
+    .from(ticketComments)
+    .innerJoin(users, and(eq(users.id, ticketComments.authorId), eq(users.organizationId, ticketComments.organizationId)))
+    .where(and(eq(ticketComments.organizationId, auth.organizationId), eq(ticketComments.ticketId, ticketId)))
+    .orderBy(asc(ticketComments.createdAt), asc(ticketComments.id));
+}
+
+// Anyone who can see the ticket can comment on it. The comment and its
+// history entry are saved together.
+export async function addComment(auth: AuthContext, ticketId: string, body: string) {
+  await getTicketOr404(auth, ticketId);
+  const id = await db.transaction(async (tx) => {
+    const [comment] = await tx
+      .insert(ticketComments)
+      .values({ organizationId: auth.organizationId, ticketId, authorId: auth.userId, body })
+      .returning({ id: ticketComments.id });
+    await tx.insert(ticketEvents).values({
+      organizationId: auth.organizationId,
+      ticketId,
+      actorId: auth.userId,
+      type: "commented",
+    });
+    return comment!.id;
+  });
+  const [comment] = await db
+    .select(commentFields)
+    .from(ticketComments)
+    .innerJoin(users, eq(users.id, ticketComments.authorId))
+    .where(eq(ticketComments.id, id));
+  return comment!;
 }

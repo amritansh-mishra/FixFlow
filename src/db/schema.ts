@@ -21,7 +21,7 @@ export const USER_ROLES = ["resident", "technician", "manager", "admin"] as cons
 export const TICKET_PRIORITIES = ["low", "medium", "high", "urgent"] as const;
 export const TICKET_STATUSES = ["open", "assigned", "in_progress", "resolved", "closed"] as const;
 
-export const TICKET_EVENT_TYPES = ["created", "assigned", "status_changed"] as const;
+export const TICKET_EVENT_TYPES = ["created", "assigned", "status_changed", "commented"] as const;
 
 export type UserRole = (typeof USER_ROLES)[number];
 export type TicketPriority = (typeof TICKET_PRIORITIES)[number];
@@ -175,7 +175,10 @@ export const ticketEvents = pgTable(
       columns: [t.assignedTo, t.organizationId],
       foreignColumns: [users.id, users.organizationId],
     }),
-    check("ticket_events_type_check", sql`${t.type} IN ('created', 'assigned', 'status_changed')`),
+    check(
+      "ticket_events_type_check",
+      sql`${t.type} IN ('created', 'assigned', 'status_changed', 'commented')`,
+    ),
     check(
       "ticket_events_from_status_check",
       sql`${t.fromStatus} IN ('open', 'assigned', 'in_progress', 'resolved', 'closed')`,
@@ -186,6 +189,40 @@ export const ticketEvents = pgTable(
     ),
     // "Show the history of this ticket, oldest first"
     index("idx_ticket_events_ticket").on(t.organizationId, t.ticketId, t.createdAt),
+  ],
+);
+
+// Discussion on a ticket. Like the history, comments are append-only:
+// the app may add and read them, never edit or delete them.
+export const ticketComments = pgTable(
+  "ticket_comments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id").notNull(),
+    ticketId: uuid("ticket_id").notNull(),
+    authorId: uuid("author_id").notNull(),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      name: "ticket_comments_organization_id_fkey",
+      columns: [t.organizationId],
+      foreignColumns: [organizations.id],
+    }),
+    foreignKey({
+      name: "ticket_comments_ticket_id_organization_id_fkey",
+      columns: [t.ticketId, t.organizationId],
+      foreignColumns: [tickets.id, tickets.organizationId],
+    }),
+    foreignKey({
+      name: "ticket_comments_author_id_organization_id_fkey",
+      columns: [t.authorId, t.organizationId],
+      foreignColumns: [users.id, users.organizationId],
+    }),
+    check("ticket_comments_body_check", sql`length(${t.body}) BETWEEN 1 AND 2000`),
+    // "Show this ticket's comments, oldest first"
+    index("idx_ticket_comments_ticket").on(t.organizationId, t.ticketId, t.createdAt),
   ],
 );
 
@@ -225,3 +262,4 @@ export type Property = typeof properties.$inferSelect;
 export type Ticket = typeof tickets.$inferSelect;
 export type NewTicket = typeof tickets.$inferInsert;
 export type TicketEvent = typeof ticketEvents.$inferSelect;
+export type TicketComment = typeof ticketComments.$inferSelect;
