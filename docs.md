@@ -21,7 +21,7 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 15. [ORMs and Drizzle](#15-orms-and-drizzle)
 16. [Drizzle Kit and migrations](#16-drizzle-kit-and-migrations)
 17. [Git: commits, pushes and viewing diffs](#17-git-commits-pushes-and-viewing-diffs)
-p 18. [Why we wrote our own baseline before switching to Drizzle](#18-why-we-wrote-our-own-baseline-before-switching-to-drizzle)
+18. [Why we wrote our own baseline before switching to Drizzle](#18-why-we-wrote-our-own-baseline-before-switching-to-drizzle)
 19. [Setting up Drizzle in FixFlow](#19-setting-up-drizzle-in-fixflow)
 20. [Glossary](#glossary)
 
@@ -738,7 +738,7 @@ There is deliberately **no** `db:push` script (chapter 16).
 
 - **npm 11 blocks install scripts by default.** You'll see a warning about `esbuild` and `fsevents`. These scripts only do optional checks, and everything works without them.
 - **Stable vs release candidate:** Drizzle 1.0 is still a **release candidate** (`rc`, not final), so we used the stable `0.45` / `0.31` versions. Don't build on pre-release versions unless you need a specific feature.
-- **Leftover:** the old `schema_migrations` table is still in the real database. It's harmless, and dropping it is a separate, deliberate step.
+- **Leftover cleaned up:** after the handover, the old `schema_migrations` table was no longer used. Before dropping it, we checked its contents (just our 2 old rows) and that nothing depended on it. Then `DROP TABLE schema_migrations`. Drizzle's logbook (`drizzle.__drizzle_migrations`) is now the only one.
 
 ---
 
