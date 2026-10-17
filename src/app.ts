@@ -1,5 +1,7 @@
 import express from "express";
 import { isProduction } from "./config/env.js";
+import { docsRouter } from "./docs/docs.routes.js";
+import { openApiDocument } from "./docs/openapi.js";
 import { pool } from "./db/index.js";
 import { errorHandler, notFoundHandler } from "./middleware/errors.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
@@ -23,23 +25,13 @@ export function createApp() {
     res.json({
       name: "FixFlow API",
       description: "Multi-tenant maintenance and work-order management",
-      docs: "https://github.com/amritansh-mishra/FixFlow#api",
+      docs: "/docs",
+      source: "https://github.com/amritansh-mishra/FixFlow",
       health: "/health",
-      endpoints: [
-        "POST /api/auth/login",
-        "POST /api/auth/logout",
-        "GET  /api/auth/me",
-        "GET  /api/properties",
-        "GET  /api/stats",
-        "GET  /api/tickets",
-        "POST /api/tickets",
-        "GET  /api/tickets/:id",
-        "GET  /api/tickets/:id/history",
-        "GET  /api/tickets/:id/comments",
-        "POST /api/tickets/:id/comments",
-        "PATCH /api/tickets/:id/assign",
-        "PATCH /api/tickets/:id/status",
-      ],
+      // Listed from the OpenAPI document, so this can't drift from the docs.
+      endpoints: Object.entries(openApiDocument.paths).flatMap(([path, ops]) =>
+        Object.keys(ops).map((method) => `${method.toUpperCase()} ${path}`),
+      ),
     });
   });
 
@@ -55,6 +47,7 @@ export function createApp() {
     }
   });
 
+  app.use(docsRouter);
   app.use("/api/auth", authRouter);
   app.use("/api/properties", propertiesRouter);
   app.use("/api/stats", statsRouter);

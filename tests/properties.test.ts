@@ -30,6 +30,7 @@ describe("GET /", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.name).toBe("FixFlow API");
-    expect(res.body.endpoints).toContain("GET  /api/properties");
+    expect(res.body.endpoints).toContain("GET /api/properties");
+    expect(res.body.docs).toBe("/docs");
   });
 });
