@@ -22,7 +22,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 16. [Drizzle Kit and migrations](#16-drizzle-kit-and-migrations)
 17. [Git: commits, pushes and viewing diffs](#17-git-commits-pushes-and-viewing-diffs)
 p 18. [Why we wrote our own baseline before switching to Drizzle](#18-why-we-wrote-our-own-baseline-before-switching-to-drizzle)
-19. [Glossary](#glossary)
+19. [Setting up Drizzle in FixFlow](#19-setting-up-drizzle-in-fixflow)
+20. [Glossary](#glossary)
 
 ---
 
@@ -591,6 +592,156 @@ Each file has **one honest job**:
 
 ---
 
+## 19. Setting up Drizzle in FixFlow
+
+### What we did, step by step
+
+1. Installed `drizzle-orm` (used by the app) and `drizzle-kit` (the command-line tool).
+2. Ran `drizzle-kit pull` to read the real database and generate a schema, **into a scratch folder first, not the project**.
+3. Compared the result with our answer key, found bugs, and **wrote `src/db/schema.ts` by hand**.
+4. Generated Drizzle's own migrations from `schema.ts`.
+5. **Proved** they rebuild the real database exactly.
+6. Did the **handover**: told Drizzle that the real database already has these migrations.
+7. Replaced our old runner with Drizzle's migrator and deleted the old `db/migrations/` folder.
+
+### Lesson 1: the tool got it wrong, and the answer key caught it
+
+`drizzle-kit pull` is supposed to read your database and write a correct `schema.ts`. Its output had **serious mistakes**:
+
+**The composite foreign keys were scrambled.** What `pull` generated:
+
+```ts
+foreignKey({
+  columns:        [table.organizationId, table.propertyId],
+  foreignColumns: [properties.id,        properties.organizationId],
+})
+```
+
+Read it column by column: it links `organization_id` to `properties.id`, and `property_id` to `properties.organization_id`. That's backwards. A migration built from this would create a completely wrong rule.
+
+The correct version, matching the real database:
+
+```ts
+foreignKey({
+  columns:        [t.propertyId, t.organizationId],
+  foreignColumns: [properties.id, properties.organizationId],
+})
+```
+
+Other mistakes it made:
+- **Composite unique keys in the wrong order:** `(organization_id, id)` instead of `(id, organization_id)`.
+- **Index settings swapped:** it marked `organization_id` (a UUID) as text and `status` (text) as a UUID. That SQL would fail.
+- **`relations.ts` had duplicate names** and wouldn't even compile.
+
+**Lesson:** generated code is a **first draft**, not the truth. This is exactly what chapter 18's answer key was for: without `0000_baseline.sql` and the `pg_dump` comparison, these bugs could have gone straight into the project.
+
+### Lesson 2: reading `schema.ts`
+
+```ts
+role: varchar("role", { length: 20, enum: USER_ROLES }).notNull(),
+```
+
+- `"role"` is the database column name.
+- `length: 20` makes it `VARCHAR(20)`.
+- `enum: USER_ROLES` **only affects TypeScript**: it makes the type `"resident" | "technician" | "manager" | "admin"` instead of plain `string`, so `role: "superadmin"` gets a red underline. The **database** rule is the separate `check(...)` below it.
+
+```ts
+check("users_role_check", sql`${t.role} IN ('resident', 'technician', 'manager', 'admin')`),
+```
+
+`sql\`...\`` lets you write raw SQL inside Drizzle for things it has no function for, like CHECK rules.
+
+The lists of allowed values are defined **once** at the top of the file and reused:
+
+```ts
+export const TICKET_STATUSES = ["open", "assigned", "in_progress", "resolved", "closed"] as const;
+export type TicketStatus = (typeof TICKET_STATUSES)[number];
+// → "open" | "assigned" | "in_progress" | "resolved" | "closed"
+```
+
+`as const` tells TypeScript "these exact strings, never changing", which is what lets it build the type. Later, the API's input validation will reuse the same list.
+
+**Dates:** `pull` generated `mode: 'string'`, which returns timestamps as text. We removed it, so Drizzle returns real JavaScript `Date` objects, which are easier to compare and format.
+
+### Lesson 3: what Drizzle Kit generated
+
+```
+drizzle/
+  0000_baseline.sql            ← CREATE TABLE ... (generated from schema.ts)
+  0001_updated_at_trigger.sql  ← the trigger (written by hand, a "custom" migration)
+  meta/
+    _journal.json              ← the list of migrations, in order, with timestamps
+    0000_snapshot.json         ← photo of the schema after 0000
+    0001_snapshot.json         ← photo of the schema after 0001
+```
+
+- **`--> statement-breakpoint`** lines in the SQL mark where one statement ends. Drizzle runs the file piece by piece.
+- **The journal** is Drizzle's table of contents. Each entry has a `tag` (the file name) and `when` (a timestamp in milliseconds).
+- **The snapshots** are how `generate` knows what changed next time (chapter 16).
+- **The trigger** had to be a custom migration: `drizzle-kit generate --custom --name updated_at_trigger` created an empty file, and we pasted in the same SQL as before.
+
+### Lesson 4: proving it's correct
+
+The same method as chapter 14:
+1. Created an empty scratch database.
+2. Ran **only** the Drizzle migrations on it.
+3. Exported its structure with `pg_dump --schema-only` and diffed it against the real database: **identical**, including indexes, the trigger function and the trigger.
+
+Then a **smoke test** (a quick check that the basics work) through Drizzle on the scratch database:
+
+| Test | Result |
+|---|---|
+| Insert a ticket | ✅ defaults filled in (`open`, `medium`), `createdAt` is a `Date` |
+| Update it | ✅ the trigger changed `updated_at` |
+| Ticket in Hostel A pointing at a property in Hostel B | ✅ **rejected** by `tickets_property_id_organization_id_fkey` |
+| Status `"done"` | ✅ **rejected** by `tickets_status_check` |
+
+The cross-organization test shows **multi-tenant safety enforced by the database itself**. Even if the API had a bug, the database refuses to mix organizations' data.
+
+Two more consistency checks:
+- `drizzle-kit check`: "Everything's fine". The migration files and snapshots agree with each other.
+- `drizzle-kit generate`: "No schema changes". `schema.ts` and the migrations describe the same thing.
+
+### Lesson 5: the handover
+
+**The problem:** Drizzle keeps its **own** logbook, the table `drizzle.__drizzle_migrations`. On the real database that logbook was empty, so Drizzle thought both migrations were **pending**. Running `db:migrate` would have tried `CREATE TABLE organizations`, which already exists, and failed.
+
+**How Drizzle decides what's applied:** it doesn't check file names. It looks at the **newest timestamp** in its logbook. Any migration whose journal `when` is newer than that is pending. It also stores each file's SHA-256 fingerprint (`hash`).
+
+**The handover script** (run once, then deleted) did this, inside one transaction:
+1. **Safety checks:** refuse unless our *old* logbook (`schema_migrations`) shows both old migrations applied **and** Drizzle's logbook is empty. That way it can't run on the wrong database, or run twice.
+2. Created Drizzle's logbook table **exactly** the way Drizzle itself creates it.
+3. Inserted one row per migration: the file's fingerprint and its journal timestamp.
+
+It followed the safe workflow again: tested on a scratch database set up to mimic the real one, then a dry run on the real database, then for real, then verified. Afterwards `--status` showed both as applied, `db:migrate` did nothing, the tables were unchanged, and the data was untouched (1/1/1/1 rows).
+
+**Analogy:** moving to a new bank. You don't re-deposit all your money. You give the new bank a statement showing what's already in the account.
+
+### Lesson 6: the new everyday workflow
+
+```bash
+# 1. Edit src/db/schema.ts (e.g. add a column)
+npm run db:generate          # 2. Drizzle writes drizzle/0002_....sql
+                             # 3. READ the SQL file. Always.
+npm run db:migrate -- --status   # 4. see what's pending
+npm run db:migrate           # 5. apply it
+npm run db:studio            # browse data in the browser
+```
+
+There is deliberately **no** `db:push` script (chapter 16).
+
+**`src/db/migrate.ts` now** uses Drizzle's migrator, keeps the advisory lock, and adds `--status`. One difference from our old runner: Drizzle runs **all** pending migrations in **one** transaction, so if the third fails, the first two are undone too.
+
+**In the app**, `src/db/index.ts` now exports `db`, the typed query builder, alongside `pool`. Both share the same connections.
+
+### Small things worth knowing
+
+- **npm 11 blocks install scripts by default.** You'll see a warning about `esbuild` and `fsevents`. These scripts only do optional checks, and everything works without them.
+- **Stable vs release candidate:** Drizzle 1.0 is still a **release candidate** (`rc`, not final), so we used the stable `0.45` / `0.31` versions. Don't build on pre-release versions unless you need a specific feature.
+- **Leftover:** the old `schema_migrations` table is still in the real database. It's harmless, and dropping it is a separate, deliberate step.
+
+---
+
 ## Glossary
 
 | Term | Simple meaning |
@@ -618,3 +769,9 @@ Each file has **one honest job**:
 | **Superuser** | A database user that can do anything. Apps shouldn't use one |
 | **LTS** | Long-Term Support: a software version that gets fixes for years |
 | **Environment variable** | A setting given to a program from outside its code |
+| **Release candidate (rc)** | A version that's almost final but still being tested. Prefer stable versions |
+| **Snapshot (Drizzle)** | A saved copy of what the schema looked like after a migration, used to work out what changed next time |
+| **Journal (Drizzle)** | `drizzle/meta/_journal.json`: the ordered list of migrations with their timestamps |
+| **Custom migration** | A migration you write by hand because the tool can't generate it (e.g. triggers) |
+| **Smoke test** | A quick check that the basic features work, before deeper testing |
+| **Handover** | Moving migration tracking from one tool to another without re-running anything |

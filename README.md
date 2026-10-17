@@ -10,10 +10,20 @@ Requires Node 24 (`nvm use`) and PostgreSQL.
 ```bash
 cp .env.example .env      # then set DATABASE_URL
 npm install
-npm run db:migrate        # apply database migrations (add -- --dry-run to preview)
+npm run db:migrate        # apply database migrations (add -- --status to preview)
 npm run dev               # start the API with auto-reload
 ```
 
-### Database migrations
+### Database schema and migrations
 
-SQL migrations live in `db/migrations/` and run in filename order, each in its own transaction. Applied migrations are tracked in the `schema_migrations` table. Never edit a migration that has already been applied; add a new numbered file instead.
+The schema is defined in TypeScript in `src/db/schema.ts` using [Drizzle ORM](https://orm.drizzle.team). Migrations are SQL files in `drizzle/`, managed by Drizzle Kit.
+
+```bash
+# 1. edit src/db/schema.ts
+npm run db:generate       # 2. write a new SQL migration into drizzle/
+                          # 3. review the generated SQL
+npm run db:migrate        # 4. apply it
+npm run db:studio         # browse tables and data in the browser
+```
+
+For things Drizzle can't generate (triggers, functions), use `npx drizzle-kit generate --custom --name <name>` and write the SQL by hand. Never edit a migration that has already been applied, and never use `drizzle-kit push` against a database with real data.
