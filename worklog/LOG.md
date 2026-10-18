@@ -40,3 +40,4 @@ One line per finished task. Details live in [docs.md](../docs.md) and the Git hi
 | 34 | 2026-10-18 | GraphQL step 4: query limits (10 root fields, 200 fields, depth 8, fragments followed; introspection exempt) checked before resolvers; GraphQL complete; 369 tests | Deploy (Render + Cloudflare R2) — needs user accounts |
 | 35 | 2026-10-18 | Security: npm audit fix for high advisory in @graphql-tools/utils (via graphql-yoga); 0 production vulnerabilities; 369 tests | Deploy (Render + Cloudflare R2) |
 | 36 | 2026-10-18 | README: why we built it, who it's for, technology choices vs alternatives, limitations, future scope; fixed stale test count and a broken table | Deploy (Render + Cloudflare R2) |
+| 37 | 2026-10-18 | README: "What it does" section (ticket journey, roles, organizations, joining) | Deploy (Render + Cloudflare R2) |

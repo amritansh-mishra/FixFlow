@@ -14,6 +14,53 @@ A resident reports a leaking tap, a manager assigns a technician, the technician
 
 **The second goal: learning.** FixFlow was also built to learn backend engineering properly, by doing what real production systems do rather than a basic to-do app: data separation between organizations, security, background jobs, file storage, two kinds of API, automated tests and CI. Every decision is explained in plain language in [`docs.md`](docs.md).
 
+## What it does
+
+**In one line:** FixFlow turns repair requests lost in group chats into an organized system where every problem has an owner, a status, a history and notifications, and everyone sees only what they should.
+
+### Every problem becomes a ticket
+
+Like a token number at a service centre, each ticket has:
+
+- **what's wrong:** title, description and photos
+- **where:** which building or property
+- **how urgent:** low, medium, high or urgent
+- **who's handling it:** the assigned technician
+- **where it stands:** its status
+
+### A ticket's journey
+
+Take a leaking tap:
+
+1. **Riya (resident)** reports "Bathroom tap leaking" with a photo. The status is **Open**.
+2. **The manager** sees it and assigns it to **Ramesh (technician)**. The status is now **Assigned**, and Ramesh gets a notification and an email.
+3. **Ramesh** arrives and taps "Start work". The status is **In progress**, and Riya is notified.
+4. Ramesh fixes the tap and taps "Resolve". The status is **Resolved**.
+5. **Riya** checks the tap. If it's fixed, she taps "Close" and it's **Closed** ✅. If it still leaks, she taps "Reopen" and it goes back to Ramesh.
+
+At any point, anyone involved can **comment** ("I'll come at 4 pm"), and every step is saved in a **history** that nobody can edit.
+
+### Each person sees only what concerns them
+
+| Person | What they see and do |
+|---|---|
+| **Resident** | Only their own tickets. They report problems and close fixed ones |
+| **Technician** | Only the jobs assigned to them. They start and finish work |
+| **Manager** | Every ticket. They assign work and use a dashboard: how many are open, average fix time, who's overloaded |
+| **Admin** | Everything a manager can do, plus adding managers |
+
+### Many organizations, one app
+
+One FixFlow installation serves many organizations, say a college hostel and an apartment society. Each is **completely separate**, like two shops in the same mall with their own locked doors: a user in one can never see the other's tickets.
+
+There are three ways to get in:
+
+- **Create an organization** and become its admin.
+- **Join with a code** (like `DEMO-2026`) as a resident.
+- **Get added by a manager** from the Team page.
+
+The parts you don't see (security, background jobs, photo processing, two APIs) exist to keep this simple experience safe and reliable.
+
 ## Who it's for
 
 | Who | What they get |
