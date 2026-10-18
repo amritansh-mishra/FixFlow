@@ -56,6 +56,25 @@ services:
       - "127.0.0.1:1025:1025" # SMTP: where the app sends email
       - "127.0.0.1:8025:8025" # web page to read the "sent" emails
 
+  # SeaweedFS: a local S3-compatible file store, standing in for Cloudflare
+  # R2 (production). Same code, different address (see docs.md chapter 34).
+  # The keys in docker/seaweedfs-s3.json are for local development only.
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.48
+    command: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-s3.config=/etc/seaweedfs/s3.json"]
+    ports:
+      # This computer only, like the others.
+      - "127.0.0.1:8333:8333" # S3 API
+    volumes:
+      - seaweeddata:/data
+      - ./docker/seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
 volumes:
   pgdata:
   redisdata:
+  seaweeddata:

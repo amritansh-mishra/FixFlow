@@ -1,0 +1,14 @@
+{
+  "identities": [
+    {
+      "name": "fixflow",
+      "credentials": [
+        {
+          "accessKey": "fixflow-dev",
+          "secretKey": "fixflow-dev-secret"
+        }
+      ],
+      "actions": ["Read", "Write", "List", "Tagging", "Admin"]
+    }
+  ]
+}

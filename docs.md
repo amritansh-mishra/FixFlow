@@ -2355,6 +2355,23 @@ Production:        S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
 
 **Why not MinIO, the usual choice?** When checked (October 2026), **MinIO's GitHub repository had been archived**: read-only and no longer maintained since April 2026, and its Docker Hub listing didn't respond. Building on an abandoned project is a risk. **Garage** and **SeaweedFS** were both actively maintained (images published that day) and S3-compatible. *Lesson: check a dependency is still alive before adopting it, especially a popular one you "know".*
 
+### Chosen stand-in: SeaweedFS
+
+`chrislusf/seaweedfs:4.48` (released 28 Sept 2026, with an Apple Silicon build) runs in Docker Compose with its S3 API on `127.0.0.1:8333`. Its local-only access keys live in `docker/seaweedfs-s3.json`. Requests without valid keys get **403 Forbidden**.
+
+**Checked with the official AWS SDK** before building anything on it: create the bucket, upload, download (content, type and size intact), list, delete, and a **wrong secret key is rejected** (`SignatureDoesNotMatch`). The client settings that keep it R2-compatible:
+
+```ts
+new S3Client({
+  endpoint: "http://127.0.0.1:8333",  // production: https://<account-id>.r2.cloudflarestorage.com
+  region: "auto",                     // what R2 expects
+  forcePathStyle: true,               // host/bucket/key addresses: supported by both
+  credentials: { accessKeyId, secretAccessKey },
+});
+```
+
+**The `localhost` trap, again.** The first health check used `http://localhost:8333/healthz` and kept failing ("connection refused"), while `127.0.0.1` worked. Inside the container, `localhost` tries **IPv6** (`::1`) first, and SeaweedFS only listens on **IPv4**. It's the same issue Mailpit had (chapter 33). **When a service "isn't running" but its logs say it is, try `127.0.0.1` instead of `localhost`.**
+
 ---
 
 ## Glossary
