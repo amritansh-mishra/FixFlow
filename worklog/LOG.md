@@ -42,3 +42,4 @@ One line per finished task. Details live in [docs.md](../docs.md) and the Git hi
 | 36 | 2026-10-18 | README: why we built it, who it's for, technology choices vs alternatives, limitations, future scope; fixed stale test count and a broken table | Deploy (Render + Cloudflare R2) |
 | 37 | 2026-10-18 | README: "What it does" section (ticket journey, roles, organizations, joining) | Deploy (Render + Cloudflare R2) |
 | 38 | 2026-10-18 | Deploy prep: RUN_WORKER_IN_API (shared startWorker), render.yaml with Neon DATABASE_URL + free Key Value Redis (noeviction, private), production rehearsal on a fresh DB passed; 369 tests | User creates Neon + Render accounts and deploys |
+| 39 | 2026-10-18 | Deployed: API + frontend + Key Value on Render, database on Neon; health, CORS and frontend API URL verified live; README links | Photos (R2) and email later |

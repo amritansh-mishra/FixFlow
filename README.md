@@ -71,7 +71,7 @@ The parts you don't see (security, background jobs, photo processing, two APIs) 
 | **Organizations** | Hostels, apartment complexes, offices, college campuses. Many organizations share one installation, each fully separated from the others |
 | **Developers and reviewers** | A readable, tested example of a multi-tenant backend, with the reasoning behind each choice |
 
-**Live app:** `https://<frontend>.onrender.com` · **API:** `https://<api>.onrender.com` · **Interactive API docs:** `https://<api>.onrender.com/docs`
+**Live app:** https://fixflow-web-l3le.onrender.com · **API:** https://fixflow-api-a1a1.onrender.com · **Interactive API docs:** https://fixflow-api-a1a1.onrender.com/docs
 (free tier: the first request after a while can take ~1 minute while the server wakes up)
 
 ## Highlights
@@ -165,7 +165,7 @@ The deployed API has a demo organization (`demo`). All demo accounts share the p
 Or try the other ways in: **Create organization** (your own empty one), or **Join with code** using `DEMO-2026` to join the demo as a new resident.
 
 ```bash
-API=https://<your-service>.onrender.com
+API=https://fixflow-api-a1a1.onrender.com
 
 # 1. Log in (returns a token)
 curl -X POST $API/api/auth/login -H "Content-Type: application/json" \
