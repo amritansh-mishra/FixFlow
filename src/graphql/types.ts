@@ -11,6 +11,7 @@ import {
   TICKET_PRIORITIES,
   TICKET_STATUSES,
   USER_ROLES,
+  ticketComments,
   users,
   type Ticket,
   type TicketAttachment,
@@ -20,7 +21,17 @@ import {
   type TicketStatus,
   type UserRole,
 } from "../db/schema.js";
-import { getTicket, listTickets } from "../modules/tickets/tickets.service.js";
+import { validate } from "../lib/validate.js";
+import { addCommentBody, createTicketBody, editTicketBody } from "../modules/tickets/tickets.schemas.js";
+import {
+  addComment,
+  assignTicket,
+  changeTicketStatus,
+  createTicket,
+  editTicket,
+  getTicket,
+  listTickets,
+} from "../modules/tickets/tickets.service.js";
 import { HttpError } from "../middleware/errors.js";
 import { withLink } from "../modules/attachments/attachments.routes.js";
 import { builder, loadersOf, requireAuth } from "./builder.js";
@@ -201,3 +212,82 @@ builder.queryFields((t) => ({
     },
   }),
 }));
+
+// ---------- Mutations ----------
+// Each one validates with the same Zod schema as REST and calls the same
+// service, so permissions, the workflow rules, race protection and
+// notifications behave identically.
+
+const CreateTicketInput = builder.inputType("CreateTicketInput", {
+  fields: (t) => ({
+    propertyId: t.id({ required: true }),
+    title: t.string({ required: true }),
+    description: t.string(),
+    priority: t.field({ type: TicketPriorityEnum }),
+  }),
+});
+
+const EditTicketInput = builder.inputType("EditTicketInput", {
+  fields: (t) => ({
+    title: t.string(),
+    // Send null to clear the description.
+    description: t.string(),
+    priority: t.field({ type: TicketPriorityEnum }),
+  }),
+});
+
+// GraphQL distinguishes "left out" (undefined) from "null"; keep only the
+// fields that were actually sent, so the shared schemas see the same shape
+// a REST body would have.
+function sentFields<T extends Record<string, unknown>>(input: T, nullMeansOmit: readonly (keyof T)[] = []) {
+  return Object.fromEntries(
+    Object.entries(input).filter(([key, value]) => value !== undefined && !(value === null && nullMeansOmit.includes(key))),
+  );
+}
+
+builder.mutationType({
+  fields: (t) => ({
+    createTicket: t.field({
+      type: TicketType,
+      args: { input: t.arg({ type: CreateTicketInput, required: true }) },
+      resolve: (_root, { input }, ctx) =>
+        createTicket(
+          requireAuth(ctx),
+          validate(createTicketBody, sentFields(input, ["description", "priority"]), "input"),
+        ),
+    }),
+
+    editTicket: t.field({
+      type: TicketType,
+      args: { id: t.arg.id({ required: true }), input: t.arg({ type: EditTicketInput, required: true }) },
+      resolve: (_root, { id, input }, ctx) =>
+        editTicket(requireAuth(ctx), uuidArg(id, "id"), validate(editTicketBody, sentFields(input, ["title", "priority"]), "input")),
+    }),
+
+    assignTicket: t.field({
+      type: TicketType,
+      args: { id: t.arg.id({ required: true }), technicianId: t.arg.id({ required: true }) },
+      resolve: (_root, args, ctx) =>
+        assignTicket(requireAuth(ctx), uuidArg(args.id, "id"), uuidArg(args.technicianId, "technicianId")),
+    }),
+
+    changeTicketStatus: t.field({
+      type: TicketType,
+      args: { id: t.arg.id({ required: true }), status: t.arg({ type: TicketStatusEnum, required: true }) },
+      resolve: (_root, args, ctx) =>
+        changeTicketStatus(requireAuth(ctx), uuidArg(args.id, "id"), args.status as TicketStatus),
+    }),
+
+    addComment: t.field({
+      type: CommentType,
+      args: { ticketId: t.arg.id({ required: true }), body: t.arg.string({ required: true }) },
+      resolve: async (_root, args, ctx) => {
+        const auth = requireAuth(ctx);
+        const { body } = validate(addCommentBody, { body: args.body }, "input");
+        const created = await addComment(auth, uuidArg(args.ticketId, "ticketId"), body);
+        const [row] = await db.select().from(ticketComments).where(eq(ticketComments.id, created.id));
+        return row!;
+      },
+    }),
+  }),
+});

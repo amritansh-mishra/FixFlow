@@ -4,6 +4,7 @@ import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { pool } from "../src/db/index.js";
+import { notificationsQueue } from "../src/jobs/queue.js";
 import { closeDatabases, createOrg, createTicket, resetDatabase } from "./helpers.js";
 
 const app = createApp();
@@ -199,5 +200,111 @@ describe("GraphQL nested data", () => {
     expect([five.tickets, twenty.tickets]).toEqual([5, 20]);
     expect(twenty.count).toBe(five.count);
     expect(five.count).toBeLessThanOrEqual(8);
+  });
+});
+
+describe("GraphQL mutations", () => {
+  it("runs the whole workflow: report → assign → start → resolve → close", async () => {
+    const a = await createOrg("a");
+
+    const created = await gql(
+      `mutation ($input: CreateTicketInput!) { createTicket(input: $input) { id status priority createdBy { name } } }`,
+      { input: { propertyId: a.property.id, title: "Leaking tap", priority: "high" } },
+      a.resident,
+    );
+    const id = created.data!.createTicket.id;
+    expect(created.data!.createTicket).toMatchObject({ status: "open", priority: "high", createdBy: { name: "resident" } });
+
+    const assigned = await gql(
+      `mutation ($id: ID!, $tech: ID!) { assignTicket(id: $id, technicianId: $tech) { status assignedTo { name } } }`,
+      { id, tech: a.technician.id },
+      a.manager,
+    );
+    expect(assigned.data!.assignTicket).toEqual({ status: "assigned", assignedTo: { name: "technician" } });
+
+    const move = (status: string, asUser: { token: string }) =>
+      gql(`mutation ($id: ID!, $s: TicketStatus!) { changeTicketStatus(id: $id, status: $s) { status } }`, { id, s: status }, asUser);
+    expect((await move("in_progress", a.technician)).data!.changeTicketStatus.status).toBe("in_progress");
+    expect((await move("resolved", a.technician)).data!.changeTicketStatus.status).toBe("resolved");
+    expect((await move("closed", a.resident)).data!.changeTicketStatus.status).toBe("closed");
+
+    const { data } = await gql(`query ($id: ID!) { ticket(id: $id) { history { type } } }`, { id }, a.manager);
+    expect(data!.ticket.history.map((e: { type: string }) => e.type)).toEqual([
+      "created",
+      "assigned",
+      "status_changed",
+      "status_changed",
+      "status_changed",
+    ]);
+  });
+
+  it("applies the same permissions as REST", async () => {
+    const a = await createOrg("a");
+    const ticket = await createTicket(a, { status: "assigned", assignedTo: a.technician.id });
+
+    const residentAssigns = await gql(
+      `mutation ($id: ID!, $tech: ID!) { assignTicket(id: $id, technicianId: $tech) { id } }`,
+      { id: ticket.id, tech: a.technician2.id },
+      a.resident,
+    );
+    const technicianReports = await gql(
+      `mutation ($input: CreateTicketInput!) { createTicket(input: $input) { id } }`,
+      { input: { propertyId: a.property.id, title: "x" } },
+      a.technician,
+    );
+    const invalidMove = await gql(
+      `mutation ($id: ID!) { changeTicketStatus(id: $id, status: closed) { id } }`,
+      { id: ticket.id },
+      a.technician,
+    );
+
+    expect(residentAssigns.errors![0]!.extensions!.code).toBe("FORBIDDEN");
+    expect(technicianReports.errors![0]!.extensions!.code).toBe("FORBIDDEN");
+    expect(invalidMove.errors![0]!.extensions!.code).toBe("INVALID_TRANSITION");
+  });
+
+  it("validates input with the same rules and field details as REST", async () => {
+    const a = await createOrg("a");
+
+    const { errors } = await gql(
+      `mutation ($input: CreateTicketInput!) { createTicket(input: $input) { id } }`,
+      { input: { propertyId: a.property.id, title: "   " } },
+      a.resident,
+    );
+
+    expect(errors![0]!.extensions).toMatchObject({ code: "VALIDATION_ERROR", details: [{ path: "title" }] });
+  });
+
+  it("edits, and adding a comment returns it with its author", async () => {
+    const a = await createOrg("a");
+    const ticket = await createTicket(a, { title: "Typo", description: "old" });
+
+    const edited = await gql(
+      `mutation ($id: ID!) { editTicket(id: $id, input: { title: "Fixed", description: null }) { title description } }`,
+      { id: ticket.id },
+      a.resident,
+    );
+    const commented = await gql(
+      `mutation ($id: ID!) { addComment(ticketId: $id, body: "  Any update?  ") { body author { name } } }`,
+      { id: ticket.id },
+      a.resident,
+    );
+
+    expect(edited.data!.editTicket).toEqual({ title: "Fixed", description: null });
+    expect(commented.data!.addComment).toEqual({ body: "Any update?", author: { name: "resident" } });
+  });
+
+  it("queues notifications exactly as REST does", async () => {
+    const a = await createOrg("a");
+    const ticket = await createTicket(a);
+
+    await gql(
+      `mutation ($id: ID!, $tech: ID!) { assignTicket(id: $id, technicianId: $tech) { id } }`,
+      { id: ticket.id, tech: a.technician.id },
+      a.manager,
+    );
+
+    const jobs = await notificationsQueue().getJobs(["waiting"]);
+    expect(jobs.map((j) => j.data.kind)).toEqual(["ticket_assigned"]);
   });
 });

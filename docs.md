@@ -2660,9 +2660,25 @@ The `User` type has an `email` field, but residents shouldn't see other people's
 
 **A demo mistake worth noting:** proving the batching test could fail took three attempts, because my automated edit to switch batching off kept breaking the file's syntax. The test run then said "no tests" (the file failed to load), which is **not** a result. Only after the edit type-checked did the real comparison (7 vs 65) appear. *Check the experiment actually ran before reading its outcome.*
 
+### Mutations: changing data
+
+In GraphQL, reads are **queries** and changes are **mutations**:
+
+```graphql
+mutation {
+  assignTicket(id: "…", technicianId: "…") { status assignedTo { name } }
+}
+```
+
+`createTicket(input)`, `editTicket(id, input)`, `assignTicket`, `changeTicketStatus` and `addComment`. Each mutation returns the changed object, and the client picks which fields come back.
+
+**One set of rules, again:** every mutation runs its input through the **same Zod schema** as REST (same messages, same `details` per field) and calls the **same service**. So the state machine, permissions, race protection, history events and **notifications** behave identically. Tests prove it: the full workflow (report, assign, start, resolve, close) runs through GraphQL; a resident assigning gets `FORBIDDEN`; an invalid move gets `INVALID_TRANSITION`; assigning queues the same `ticket_assigned` notification job.
+
+**"Left out" vs "null":** GraphQL distinguishes a field you didn't send from one you set to `null`. In `editTicket`, `description: null` **clears** the description, while leaving it out **doesn't touch it**. A small helper (`sentFields`) keeps only the fields actually sent, so the shared schema sees the same shape a REST body would have.
+
 ### Next
 
-Mutations: creating, assigning, moving, editing and commenting on tickets through GraphQL, reusing the same services and rules.
+Protecting the endpoint from overly expensive queries (depth and size limits).
 
 ---
 
