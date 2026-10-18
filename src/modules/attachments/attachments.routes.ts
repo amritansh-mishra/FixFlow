@@ -14,6 +14,7 @@ import { z } from "zod";
 import { db } from "../../db/index.js";
 import { MAX_ATTACHMENT_BYTES, ticketAttachments, type TicketAttachment } from "../../db/schema.js";
 import { detectImageType } from "../../lib/image-type.js";
+import { preparePhoto } from "../../lib/images.js";
 import { deleteFile, downloadLink, putFile } from "../../lib/storage.js";
 import { validate } from "../../lib/validate.js";
 import { getAuth, requireUser } from "../../middleware/auth.js";
@@ -66,8 +67,13 @@ function cleanFileName(name: string, extension: string): string {
 }
 
 async function withLink(row: TicketAttachment) {
-  const { storageKey: _key, organizationId: _org, ...rest } = row;
-  return { ...rest, url: await downloadLink(row.storageKey) };
+  const { storageKey: _key, thumbnailKey: _thumb, organizationId: _org, ...rest } = row;
+  const [url, thumbnailUrl] = await Promise.all([
+    downloadLink(row.storageKey),
+    // Older photos have no thumbnail: fall back to the full photo.
+    row.thumbnailKey ? downloadLink(row.thumbnailKey) : undefined,
+  ]);
+  return { ...rest, url, thumbnailUrl: thumbnailUrl ?? url };
 }
 
 attachmentsRouter.post("/", loadTicket, readPhoto, async (req, res) => {
@@ -90,12 +96,27 @@ attachmentsRouter.post("/", loadTicket, readPhoto, async (req, res) => {
     throw new HttpError(409, "TOO_MANY_ATTACHMENTS", `A ticket can have at most ${MAX_ATTACHMENTS_PER_TICKET} photos`);
   }
 
-  // Step 4: store it under a key the server chooses. The uploaded file name
-  // never becomes part of the path, so names like "../../x" can't do anything.
-  const storageKey = `orgs/${auth.organizationId}/tickets/${ticketId}/${randomUUID()}.${detected.extension}`;
-  await putFile(storageKey, file.buffer, detected.type);
+  // Step 4: decode it fully (rejects fakes), strip hidden metadata such as
+  // GPS location, and make a thumbnail.
+  const prepared = await preparePhoto(file.buffer, detected.type);
+  if (!prepared) {
+    throw new HttpError(415, "UNSUPPORTED_FILE_TYPE", "That file isn't a valid JPEG, PNG or WebP image");
+  }
+  if (prepared.original.length > MAX_ATTACHMENT_BYTES) {
+    throw new HttpError(413, "PAYLOAD_TOO_LARGE", "Photos can be at most 5 MB");
+  }
 
-  // Step 5: record it.
+  // Step 5: store both under keys the server chooses. The uploaded file name
+  // never becomes part of the path, so names like "../../x" can't do anything.
+  const base = `orgs/${auth.organizationId}/tickets/${ticketId}/${randomUUID()}`;
+  const storageKey = `${base}.${detected.extension}`;
+  const thumbnailKey = `${base}-thumb.webp`;
+  await Promise.all([
+    putFile(storageKey, prepared.original, detected.type),
+    putFile(thumbnailKey, prepared.thumbnail, "image/webp"),
+  ]);
+
+  // Step 6: record it.
   const [row] = await db
     .insert(ticketAttachments)
     .values({
@@ -103,9 +124,10 @@ attachmentsRouter.post("/", loadTicket, readPhoto, async (req, res) => {
       ticketId,
       uploadedBy: auth.userId,
       storageKey,
+      thumbnailKey,
       fileName: cleanFileName(file.originalname, detected.extension),
       contentType: detected.type,
-      sizeBytes: file.size,
+      sizeBytes: prepared.original.length,
     })
     .returning();
   res.status(201).json({ data: await withLink(row!) });
@@ -130,7 +152,12 @@ attachmentsRouter.delete("/:attachmentId", loadTicket, async (req, res) => {
   const { attachmentId } = validate(attachmentIdParams, req.params, "attachment id");
 
   const [photo] = await db
-    .select({ id: ticketAttachments.id, uploadedBy: ticketAttachments.uploadedBy, storageKey: ticketAttachments.storageKey })
+    .select({
+      id: ticketAttachments.id,
+      uploadedBy: ticketAttachments.uploadedBy,
+      storageKey: ticketAttachments.storageKey,
+      thumbnailKey: ticketAttachments.thumbnailKey,
+    })
     .from(ticketAttachments)
     .where(
       and(
@@ -150,7 +177,7 @@ attachmentsRouter.delete("/:attachmentId", loadTicket, async (req, res) => {
   // is an unused file in storage, never a broken photo on the page.
   await db.delete(ticketAttachments).where(eq(ticketAttachments.id, photo.id));
   try {
-    await deleteFile(photo.storageKey);
+    await Promise.all([deleteFile(photo.storageKey), photo.thumbnailKey ? deleteFile(photo.thumbnailKey) : undefined]);
   } catch (err) {
     console.error(`Photo ${photo.id} removed, but deleting its file failed (orphaned: ${photo.storageKey}):`, err);
   }

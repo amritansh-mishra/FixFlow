@@ -18,7 +18,7 @@ A resident reports a leaking tap, a manager assigns a technician, the technician
 - **Workflow as a state machine:** `open → assigned → in_progress → resolved → closed` (with reopen), with the rules in one policy module.
 - **Audit history:** an append-only event log for every ticket, written in the same transaction as each change.
 - **Background jobs:** assignments, status changes and comments queue notification jobs (BullMQ on Redis); a separate worker process turns them into in-app notifications and emails, idempotently, with retries.
-- **Photo attachments:** uploads checked by their actual bytes (JPEG/PNG/WebP, ≤ 5 MB), stored in S3-compatible object storage (Cloudflare R2 in production, SeaweedFS locally), served through short-lived signed links.
+- **Photo attachments:** uploads checked by their actual bytes (JPEG/PNG/WebP, ≤ 5 MB), re-encoded to strip hidden metadata such as GPS location, with small WebP thumbnails, stored in S3-compatible object storage (Cloudflare R2 in production, SeaweedFS locally), served through short-lived signed links.
 - **Concurrency-safe updates:** optimistic concurrency returns `409 CONFLICT` instead of losing a simultaneous change.
 - **Least-privilege database role:** the app's database user can't alter tables or rewrite history.
 - **Comments, search and pagination:** ticket discussions, text search with filters, and cursor pagination that stays exact down to the microsecond.

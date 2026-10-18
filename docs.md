@@ -2552,6 +2552,25 @@ POST /api/auth/reset-password   { token, newPassword }    → password set, ever
 1. **zsh doesn't split variables into words.** I put all the test settings into one shell variable and passed it to `env`. zsh (unlike bash) passed it as **one** giant value, so the test API got a nonsense database address and returned 500s. *Write each setting out explicitly.*
 2. **Printing raw errors can leak secrets.** That broken address appeared in an error message I printed, including the first few characters of the local database password. I deleted the logs and flagged it. *Mask connection strings before printing logs.*
 
+
+### 3. Thumbnails, and removing hidden location data
+
+**The problem:** the photo grid downloaded **full-size photos** (up to 5 MB each) just to show 96-pixel squares.
+
+**The fix:** on upload, **sharp** (a fast image library) makes a **small WebP preview** that fits in 320×320 and keeps the photo's shape. The list returns `thumbnailUrl` next to `url`; the grid uses the thumbnail, and the full-size view uses the full photo. Measured live: a 1600×1200 photo's thumbnail was **252 bytes**.
+
+**The privacy fix that came with it:** phone photos carry hidden **EXIF metadata** (camera model, time and often **GPS coordinates**). A resident photographing a leak in their flat would have shared their **exact home location** with everyone who can open the ticket. Now the original is **re-encoded without metadata** (sharp drops metadata unless asked to keep it). `.rotate()` first applies the camera's orientation, so photos aren't sideways once that information is gone. Live check: the upload had EXIF, and the stored photo and thumbnail had none.
+
+**Two more protections from decoding the whole image:**
+- A file with an image's **first bytes but garbage after** (which passed the old first-bytes check) now fails to decode, giving **415**.
+- `limitInputPixels: 40 000 000` refuses **decompression bombs**: tiny files that expand to enormous images to exhaust the server's memory.
+
+**Database:** migration `0012` adds a nullable `thumbnail_key`. Photos uploaded before this have none, so the API falls back to the full photo for them. Deleting a photo now removes **both** files.
+
+**Tests now use real images** generated with sharp. The old fake samples (right first bytes, garbage after) are now the "should be rejected" cases. Breaking it on purpose: keeping EXIF, storing the raw upload instead of the cleaned image, and not deleting the thumbnail were each caught. 346 tests.
+
+**sharp, and npm's install-script blocking:** native libraries often need install scripts, which npm 11 blocks by default. sharp 0.35 ships **ready-made binaries** as optional packages (macOS arm64 for this laptop, Linux x64 for CI and Render), so it works without any script.
+
 ---
 
 ## Glossary
@@ -2707,3 +2726,6 @@ POST /api/auth/reset-password   { token, newPassword }    → password set, ever
 | **415 Unsupported Media Type** | HTTP status for "this kind of file isn't accepted" |
 | **Orphaned file** | A file left in storage with nothing referring to it any more |
 | **Atomic claim** | Marking something as taken in a single database statement that only one request can win |
+| **EXIF metadata** | Hidden information inside photos (camera, time, often GPS location) |
+| **Thumbnail** | A small preview version of an image |
+| **Decompression bomb** | A small file that expands to a huge one when opened, meant to exhaust memory |

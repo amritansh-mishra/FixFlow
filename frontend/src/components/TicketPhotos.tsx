@@ -108,7 +108,7 @@ export function TicketPhotos({ ticketId }: { ticketId: string }) {
             <li key={photo.id}>
               <button className="photo-thumb" onClick={() => setViewing(photo)} title={photo.fileName}>
                 {/* If a link expired (e.g. after the laptop slept), fetch fresh ones. */}
-                <img src={photo.url} alt={photo.fileName} loading="lazy" onError={() => void load()} />
+                <img src={photo.thumbnailUrl} alt={photo.fileName} loading="lazy" onError={() => void load()} />
               </button>
             </li>
           ))}

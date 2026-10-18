@@ -164,7 +164,8 @@ export const openApiDocument = {
           contentType: { type: "string", enum: ["image/jpeg", "image/png", "image/webp"] },
           sizeBytes: { type: "integer" },
           createdAt: timestamp,
-          url: { type: "string", format: "uri", description: "Download link, valid for 5 minutes" },
+          url: { type: "string", format: "uri", description: "Download link to the full photo, valid for 5 minutes" },
+          thumbnailUrl: { type: "string", format: "uri", description: "Link to a small WebP preview (≤ 320 px), valid for 5 minutes" },
         },
       },
       Comment: {

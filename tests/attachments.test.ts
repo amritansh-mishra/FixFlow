@@ -1,7 +1,8 @@
 // Photo attachments, stored in the local S3-compatible SeaweedFS.
 
+import sharp from "sharp";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { MAX_ATTACHMENT_BYTES, ticketAttachments } from "../src/db/schema.js";
 import { detectImageType } from "../src/lib/image-type.js";
@@ -13,14 +14,26 @@ const app = createApp();
 beforeEach(resetDatabase);
 afterAll(closeDatabases);
 
-// The smallest valid 1×1 PNG, plus files that merely *start* like JPEG/WebP
-// (only the first bytes matter for type detection).
-const PNG = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-  "base64",
-);
-const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(100, 1)]);
-const WEBP = Buffer.concat([Buffer.from("RIFF"), Buffer.from([0x24, 0, 0, 0]), Buffer.from("WEBPVP8 "), Buffer.alloc(40)]);
+// Real images, made with sharp: 800×600 so the thumbnail is visibly smaller.
+let PNG: Buffer;
+let JPEG: Buffer;
+let WEBP: Buffer;
+// A JPEG carrying GPS coordinates in its EXIF metadata, like a phone photo.
+let JPEG_WITH_GPS: Buffer;
+// Files that merely *start* like JPEG/WebP: right first bytes, garbage after.
+const FAKE_JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(100, 1)]);
+const FAKE_WEBP = Buffer.concat([Buffer.from("RIFF"), Buffer.from([0x24, 0, 0, 0]), Buffer.from("WEBPVP8 "), Buffer.alloc(40)]);
+
+beforeAll(async () => {
+  const canvas = () => sharp({ create: { width: 800, height: 600, channels: 3, background: "#3366cc" } });
+  PNG = await canvas().png().toBuffer();
+  JPEG = await canvas().jpeg().toBuffer();
+  WEBP = await canvas().webp().toBuffer();
+  JPEG_WITH_GPS = await canvas()
+    .jpeg()
+    .withExif({ IFD0: { Make: "TestPhone" }, IFD3: { GPSLatitudeRef: "N", GPSLatitude: "12/1 58/1 0/1" } })
+    .toBuffer();
+});
 
 type AsUser = { token: string };
 const upload = (ticketId: string, asUser: AsUser, file: Buffer, filename = "photo.png") =>
@@ -33,11 +46,11 @@ const list = (ticketId: string, asUser: AsUser) =>
 
 describe("detectImageType (reads the file's first bytes)", () => {
   it.each([
-    ["PNG", PNG, "image/png"],
-    ["JPEG", JPEG, "image/jpeg"],
-    ["WebP", WEBP, "image/webp"],
-  ] as const)("recognizes %s", (_name, bytes, type) => {
-    expect(detectImageType(bytes)?.type).toBe(type);
+    ["JPEG", () => FAKE_JPEG, "image/jpeg"],
+    ["WebP", () => FAKE_WEBP, "image/webp"],
+    ["PNG", () => PNG, "image/png"],
+  ] as const)("recognizes %s by its signature", (_name, bytes, type) => {
+    expect(detectImageType(bytes())?.type).toBe(type);
   });
 
   it.each([
@@ -51,7 +64,7 @@ describe("detectImageType (reads the file's first bytes)", () => {
 });
 
 describe("POST /api/tickets/:id/attachments", () => {
-  it("stores a photo and returns a download link that serves the same bytes", async () => {
+  it("stores a photo and returns a download link to the full image", async () => {
     const a = await createOrg("a");
     const ticket = await createTicket(a);
 
@@ -63,24 +76,61 @@ describe("POST /api/tickets/:id/attachments", () => {
       uploadedBy: a.resident.id,
       fileName: "leak.png",
       contentType: "image/png",
-      sizeBytes: PNG.length,
     });
-    expect(res.body.data.storageKey).toBeUndefined(); // internal detail, never exposed
+    expect(res.body.data.storageKey).toBeUndefined(); // internal details, never exposed
+    expect(res.body.data.thumbnailKey).toBeUndefined();
 
     const download = await fetch(res.body.data.url);
     expect(download.status).toBe(200);
     expect(download.headers.get("content-type")).toBe("image/png");
-    expect(Buffer.from(await download.arrayBuffer()).equals(PNG)).toBe(true);
+    const meta = await sharp(Buffer.from(await download.arrayBuffer())).metadata();
+    expect([meta.format, meta.width, meta.height]).toEqual(["png", 800, 600]);
+  });
+
+  it("makes a small WebP thumbnail", async () => {
+    const a = await createOrg("a");
+    const ticket = await createTicket(a);
+
+    const { body } = await upload(ticket.id, a.resident, PNG);
+    const thumb = Buffer.from(await (await fetch(body.data.thumbnailUrl)).arrayBuffer());
+    const meta = await sharp(thumb).metadata();
+
+    expect(meta.format).toBe("webp");
+    expect([meta.width, meta.height]).toEqual([320, 240]); // fits in 320×320, keeps the shape
+  });
+
+  it("removes hidden metadata such as GPS location", async () => {
+    const a = await createOrg("a");
+    const ticket = await createTicket(a);
+    expect((await sharp(JPEG_WITH_GPS).metadata()).exif).toBeDefined(); // the upload really has it
+
+    const { body } = await upload(ticket.id, a.resident, JPEG_WITH_GPS, "flat.jpg");
+    const stored = Buffer.from(await (await fetch(body.data.url)).arrayBuffer());
+
+    expect((await sharp(stored).metadata()).exif).toBeUndefined();
   });
 
   it.each([
-    ["JPEG", JPEG, "image/jpeg"],
-    ["WebP", WEBP, "image/webp"],
+    ["JPEG", () => FAKE_JPEG],
+    ["WebP", () => FAKE_WEBP],
+  ])("rejects a fake %s that only has the right first bytes", async (_name, bytes) => {
+    const a = await createOrg("a");
+    const ticket = await createTicket(a);
+
+    const res = await upload(ticket.id, a.resident, bytes(), "photo");
+
+    expect(res.status).toBe(415);
+    expect(await adminDb.select().from(ticketAttachments)).toHaveLength(0);
+  });
+
+  it.each([
+    ["JPEG", () => JPEG, "image/jpeg"],
+    ["WebP", () => WEBP, "image/webp"],
   ] as const)("accepts %s", async (_name, bytes, type) => {
     const a = await createOrg("a");
     const ticket = await createTicket(a);
 
-    const res = await upload(ticket.id, a.resident, bytes, "photo");
+    const res = await upload(ticket.id, a.resident, bytes(), "photo");
 
     expect(res.status).toBe(201);
     expect(res.body.data.contentType).toBe(type);
@@ -211,6 +261,7 @@ describe("DELETE /api/tickets/:id/attachments/:attachmentId", () => {
     expect(res.status).toBe(204);
     expect(await adminDb.select().from(ticketAttachments)).toHaveLength(0);
     expect((await fetch(body.data.url)).status).toBe(404); // the file itself was deleted from storage
+    expect((await fetch(body.data.thumbnailUrl)).status).toBe(404); // and its thumbnail
   });
 
   it.each(["manager", "admin"] as const)("lets a %s remove anyone's photo", async (role) => {

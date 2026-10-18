@@ -139,8 +139,9 @@ export interface Attachment {
   contentType: string;
   sizeBytes: number;
   createdAt: string;
-  // Signed download link, valid for 5 minutes.
+  // Signed download links, valid for 5 minutes: the full photo and a small preview.
   url: string;
+  thumbnailUrl: string;
 }
 
 // Same limits as the API, checked first so people get instant feedback.
