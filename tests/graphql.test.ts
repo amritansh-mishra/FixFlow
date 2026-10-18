@@ -3,6 +3,7 @@
 import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { pool } from "../src/db/index.js";
 import { closeDatabases, createOrg, createTicket, resetDatabase } from "./helpers.js";
 
 const app = createApp();
@@ -110,5 +111,93 @@ describe("GraphQL", () => {
     const { errors } = await gql("{ me { passwordHash } }", {}, a.manager);
 
     expect(errors![0]!.message).toContain('Cannot query field "passwordHash"');
+  });
+});
+
+describe("GraphQL nested data", () => {
+  const NESTED = `{
+    tickets(first: 50) {
+      nodes {
+        title
+        property { name }
+        createdBy { name }
+        assignedTo { name }
+        comments { body author { name } }
+        history { type actor { name } }
+        photos { fileName }
+      }
+    }
+  }`;
+
+  it("returns a ticket with its people, property, comments and history in one request", async () => {
+    const a = await createOrg("a");
+    const ticket = await createTicket(a, { title: "Leak", status: "assigned", assignedTo: a.technician.id });
+    await request(app)
+      .post(`/api/tickets/${ticket.id}/comments`)
+      .auth(a.manager.token, { type: "bearer" })
+      .send({ body: "On its way" });
+
+    const { data } = await gql(
+      `query ($id: ID!) { ticket(id: $id) {
+        title property { name } createdBy { name } assignedTo { name role }
+        comments { body author { name role } } history { type actor { name } } photos { id }
+      } }`,
+      { id: ticket.id },
+      a.resident,
+    );
+
+    expect(data!.ticket).toEqual({
+      title: "Leak",
+      property: { name: "a Block A" },
+      createdBy: { name: "resident" },
+      assignedTo: { name: "technician", role: "technician" },
+      comments: [{ body: "On its way", author: { name: "manager", role: "manager" } }],
+      history: [{ type: "commented", actor: { name: "manager" } }],
+      photos: [],
+    });
+  });
+
+  it("shows email addresses only to the person themselves and to managers", async () => {
+    const a = await createOrg("a");
+    const ticket = await createTicket(a, { status: "assigned", assignedTo: a.technician.id });
+    const query = `query ($id: ID!) { me { email } ticket(id: $id) { assignedTo { email } } }`;
+
+    const asResident = await gql(query, { id: ticket.id }, a.resident);
+    const asManager = await gql(query, { id: ticket.id }, a.manager);
+
+    expect(asResident.data).toEqual({ me: { email: "resident@a.test" }, ticket: { assignedTo: { email: null } } });
+    expect(asManager.data!.ticket.assignedTo.email).toBe("technician@a.test");
+  });
+
+  // The N+1 problem: without batching, every ticket would run its own queries
+  // for its reporter, property, comments… With DataLoader the number of
+  // database queries stays the same however many tickets there are.
+  it("uses the same number of database queries for 5 tickets as for 20 (DataLoader)", async () => {
+    const a = await createOrg("a");
+    const countQueries = async () => {
+      let count = 0;
+      const original = pool.query.bind(pool);
+      // Count every query the app runs while answering one GraphQL request.
+      pool.query = ((...args: Parameters<typeof pool.query>) => {
+        count++;
+        return original(...args);
+      }) as typeof pool.query;
+      try {
+        const { data, errors } = await gql(NESTED, {}, a.manager);
+        expect(errors).toBeUndefined();
+        return { count, tickets: data!.tickets.nodes.length };
+      } finally {
+        pool.query = original;
+      }
+    };
+
+    for (let i = 0; i < 5; i++) await createTicket(a, { title: `t${i}`, status: "assigned", assignedTo: a.technician.id });
+    const five = await countQueries();
+    for (let i = 5; i < 20; i++) await createTicket(a, { title: `t${i}`, status: "assigned", assignedTo: a.technician.id });
+    const twenty = await countQueries();
+
+    expect([five.tickets, twenty.tickets]).toEqual([5, 20]);
+    expect(twenty.count).toBe(five.count);
+    expect(five.count).toBeLessThanOrEqual(8);
   });
 });

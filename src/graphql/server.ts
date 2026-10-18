@@ -6,6 +6,7 @@ import { isProduction } from "../config/env.js";
 import { HttpError } from "../middleware/errors.js";
 import { findSessionUser } from "../modules/auth/auth.service.js";
 import { builder, type GraphQLContext } from "./builder.js";
+import { createLoaders } from "./loaders.js";
 import "./types.js"; // registers the types and queries on the builder
 
 const BEARER_RE = /^Bearer ([A-Za-z0-9_-]{20,200})$/i;
@@ -33,7 +34,9 @@ export const yoga = createYoga<{ req: Request; res: Response }, GraphQLContext>(
   // Same login as REST: Authorization: Bearer <session token>.
   context: async ({ request }): Promise<GraphQLContext> => {
     const match = BEARER_RE.exec(request.headers.get("authorization") ?? "");
-    return { auth: match ? await findSessionUser(match[1]!) : null };
+    const auth = match ? await findSessionUser(match[1]!) : null;
+    // Fresh loaders per request: batching and caching never cross users.
+    return { auth, loaders: auth ? createLoaders(auth) : null };
   },
   maskedErrors: {
     // Expected errors (HttpError from the shared services) keep their message

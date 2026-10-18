@@ -6,18 +6,24 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import {
+  ATTACHMENT_TYPES,
+  TICKET_EVENT_TYPES,
   TICKET_PRIORITIES,
   TICKET_STATUSES,
   USER_ROLES,
   users,
   type Ticket,
+  type TicketAttachment,
+  type TicketComment,
+  type TicketEvent,
   type TicketPriority,
   type TicketStatus,
   type UserRole,
 } from "../db/schema.js";
 import { getTicket, listTickets } from "../modules/tickets/tickets.service.js";
 import { HttpError } from "../middleware/errors.js";
-import { builder, requireAuth } from "./builder.js";
+import { withLink } from "../modules/attachments/attachments.routes.js";
+import { builder, loadersOf, requireAuth } from "./builder.js";
 
 // IDs are UUIDs; anything else is a client mistake (400), not a database error.
 export function uuidArg(value: string | number, name: string): string {
@@ -42,8 +48,69 @@ export const UserType = builder.objectRef<UserShape>("User").implement({
   fields: (t) => ({
     id: t.exposeID("id"),
     name: t.exposeString("name"),
-    email: t.exposeString("email"),
     role: t.expose("role", { type: UserRoleEnum }),
+    // Field-level authorization: an email address is shown only to the
+    // person themselves and to managers/admins, like the REST API (comments
+    // show names and roles; only managers list the team with emails).
+    email: t.string({
+      nullable: true,
+      resolve: (user, _args, ctx) => {
+        const viewer = requireAuth(ctx);
+        return viewer.userId === user.id || viewer.role === "manager" || viewer.role === "admin" ? user.email : null;
+      },
+    }),
+  }),
+});
+
+const PropertyType = builder.objectRef<{ id: string; name: string; address: string | null }>("Property").implement({
+  fields: (t) => ({
+    id: t.exposeID("id"),
+    name: t.exposeString("name"),
+    address: t.exposeString("address", { nullable: true }),
+  }),
+});
+
+const CommentType = builder.objectRef<TicketComment>("Comment").implement({
+  fields: (t) => ({
+    id: t.exposeID("id"),
+    body: t.exposeString("body"),
+    createdAt: t.expose("createdAt", { type: "DateTime" }),
+    author: t.field({ type: UserType, nullable: true, resolve: (c, _a, ctx) => loadersOf(ctx).user.load(c.authorId) }),
+  }),
+});
+
+const EventTypeEnum = builder.enumType("TicketEventType", { values: TICKET_EVENT_TYPES });
+
+const TicketEventType = builder.objectRef<TicketEvent>("TicketEvent").implement({
+  fields: (t) => ({
+    id: t.exposeID("id"),
+    type: t.expose("type", { type: EventTypeEnum }),
+    fromStatus: t.expose("fromStatus", { type: TicketStatusEnum, nullable: true }),
+    toStatus: t.expose("toStatus", { type: TicketStatusEnum, nullable: true }),
+    createdAt: t.expose("createdAt", { type: "DateTime" }),
+    actor: t.field({ type: UserType, nullable: true, resolve: (e, _a, ctx) => loadersOf(ctx).user.load(e.actorId) }),
+    assignedTo: t.field({
+      type: UserType,
+      nullable: true,
+      resolve: (e, _a, ctx) => (e.assignedTo ? loadersOf(ctx).user.load(e.assignedTo) : null),
+    }),
+  }),
+});
+
+const PhotoTypeEnum = builder.enumType("PhotoType", {
+  values: Object.fromEntries(ATTACHMENT_TYPES.map((t) => [t.replace("image/", "").toUpperCase(), { value: t }])),
+});
+
+const PhotoType = builder.objectRef<Awaited<ReturnType<typeof withLink>>>("Photo").implement({
+  fields: (t) => ({
+    id: t.exposeID("id"),
+    fileName: t.exposeString("fileName"),
+    contentType: t.expose("contentType", { type: PhotoTypeEnum }),
+    sizeBytes: t.exposeInt("sizeBytes"),
+    createdAt: t.expose("createdAt", { type: "DateTime" }),
+    url: t.exposeString("url", { description: "Signed link to the full photo, valid for 5 minutes" }),
+    thumbnailUrl: t.exposeString("thumbnailUrl", { description: "Signed link to a small preview, valid for 5 minutes" }),
+    uploadedBy: t.field({ type: UserType, nullable: true, resolve: (p, _a, ctx) => loadersOf(ctx).user.load(p.uploadedBy) }),
   }),
 });
 
@@ -59,6 +126,20 @@ export const TicketType = builder.objectRef<Ticket>("Ticket").implement({
     assignedToId: t.exposeID("assignedTo", { nullable: true }),
     createdAt: t.expose("createdAt", { type: "DateTime" }),
     updatedAt: t.expose("updatedAt", { type: "DateTime" }),
+    // Nested data, each fetched in batches across all tickets in the response.
+    property: t.field({ type: PropertyType, nullable: true, resolve: (tk, _a, ctx) => loadersOf(ctx).property.load(tk.propertyId) }),
+    createdBy: t.field({ type: UserType, nullable: true, resolve: (tk, _a, ctx) => loadersOf(ctx).user.load(tk.createdBy) }),
+    assignedTo: t.field({
+      type: UserType,
+      nullable: true,
+      resolve: (tk, _a, ctx) => (tk.assignedTo ? loadersOf(ctx).user.load(tk.assignedTo) : null),
+    }),
+    comments: t.field({ type: [CommentType], resolve: (tk, _a, ctx) => loadersOf(ctx).comments.load(tk.id) }),
+    history: t.field({ type: [TicketEventType], resolve: (tk, _a, ctx) => loadersOf(ctx).history.load(tk.id) }),
+    photos: t.field({
+      type: [PhotoType],
+      resolve: async (tk, _a, ctx) => Promise.all((await loadersOf(ctx).photos.load(tk.id)).map((p: TicketAttachment) => withLink(p))),
+    }),
   }),
 });
 

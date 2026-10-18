@@ -2619,9 +2619,50 @@ At first, the *expected* errors were masked as "Unexpected error." too. Logging 
 
 **The fix doesn't depend on which copy is loaded:** app code **never** constructs or `instanceof`-checks `GraphQLError`. It throws `HttpError`; `maskError` walks the error's wrapper chain to find it; and the error returned to clients is built with **Yoga's** `createGraphQLError`, which always matches Yoga's copy. This is known as the **dual package hazard**. *Lesson: when `instanceof` mysteriously fails for a class from a library, suspect two copies of that library.*
 
+### Nested data: one query for a whole ticket page
+
+```graphql
+query ($id: ID!) {
+  ticket(id: $id) {
+    title
+    property { name }
+    createdBy { name }
+    assignedTo { name role }
+    comments { body author { name role } }
+    history { type actor { name } }
+    photos { fileName thumbnailUrl }
+  }
+}
+```
+
+What took four REST requests is one GraphQL request.
+
+### The N+1 problem, and DataLoader ⭐
+
+**The trap:** if each ticket's `createdBy` resolver runs its own query, a list of N tickets costs **1 query for the list + N for reporters + N for properties + N for comments…** That's the **N+1 problem**, the classic GraphQL performance bug.
+
+**The fix: DataLoader** (`src/graphql/loaders.ts`). During one request, every resolver asks the loader (`loaders.user.load(id)`) instead of the database. The loader **waits until the current tick of work finishes**, collects all the IDs requested, and runs **one** query: `WHERE id IN (…)`. Then it hands each resolver its own row. The same happens for properties, comments, history and photos.
+
+**Proved by counting queries** (the test temporarily wraps `pool.query` with a counter):
+
+| | 5 tickets | 20 tickets |
+|---|---|---|
+| With DataLoader | 7 | **7** |
+| Batching switched off | 20 | **65** |
+
+The test asserts the count is the **same** for 5 and 20 tickets. With batching off it fails (`expected 65 to be 20`).
+
+**Loaders are created per request**, scoped to the caller's organization. DataLoader also **caches** results, and a cache shared between requests could hand one user's data to another. A fresh set per request makes that impossible.
+
+### Field-level authorization
+
+The `User` type has an `email` field, but residents shouldn't see other people's emails (REST shows only names and roles in comments). The `email` resolver checks **who's asking**: you see your own email, managers and admins see everyone's, and anyone else gets `null`. In GraphQL, permissions can be needed **per field**, not just per endpoint, because a client can reach a `User` through many paths (a comment's author, a ticket's assignee, a history event's actor).
+
+**A demo mistake worth noting:** proving the batching test could fail took three attempts, because my automated edit to switch batching off kept breaking the file's syntax. The test run then said "no tests" (the file failed to load), which is **not** a result. Only after the edit type-checked did the real comparison (7 vs 65) appear. *Check the experiment actually ran before reading its outcome.*
+
 ### Next
 
-Nested data in one query (a ticket's comments, photos, history and people), with **DataLoader** to avoid the "N+1 queries" problem, then mutations.
+Mutations: creating, assigning, moving, editing and commenting on tickets through GraphQL, reusing the same services and rules.
 
 ---
 
@@ -2785,3 +2826,6 @@ Nested data in one query (a ticket's comments, photos, history and people), with
 | **Resolver** | The function that fetches the data for one GraphQL field |
 | **GraphiQL** | An interactive in-browser explorer for GraphQL APIs |
 | **Dual package hazard** | Two copies of the same library (e.g. ESM and CommonJS builds) loaded at once, so their classes don't match |
+| **N+1 problem** | Running one query for a list plus one more per item, so the query count grows with the list |
+| **DataLoader** | A utility that collects lookups made during one request and fetches them in a single batched query |
+| **Field-level authorization** | Deciding per field (not per endpoint) whether the viewer may see it |

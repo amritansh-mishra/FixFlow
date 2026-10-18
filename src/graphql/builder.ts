@@ -4,10 +4,13 @@
 import SchemaBuilder from "@pothos/core";
 import type { AuthContext } from "../middleware/auth.js";
 import { HttpError } from "../middleware/errors.js";
+import type { Loaders } from "./loaders.js";
 
 export interface GraphQLContext {
   // null when the request has no valid session token.
   auth: AuthContext | null;
+  // Per-request batch loaders (see loaders.ts); null when not logged in.
+  loaders: Loaders | null;
 }
 
 export const builder = new SchemaBuilder<{
@@ -33,6 +36,12 @@ export function requireAuth(ctx: GraphQLContext): AuthContext {
     throw new HttpError(401, "UNAUTHENTICATED", "Log in and send your token as 'Authorization: Bearer <token>'");
   }
   return ctx.auth;
+}
+
+// The batch loaders for this request (the caller must be logged in).
+export function loadersOf(ctx: GraphQLContext): Loaders {
+  requireAuth(ctx);
+  return ctx.loaders!;
 }
 
 builder.queryType({});

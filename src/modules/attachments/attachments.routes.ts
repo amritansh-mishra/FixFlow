@@ -66,7 +66,7 @@ function cleanFileName(name: string, extension: string): string {
   return base || `photo.${extension}`;
 }
 
-async function withLink(row: TicketAttachment) {
+export async function withLink(row: TicketAttachment) {
   const { storageKey: _key, thumbnailKey: _thumb, organizationId: _org, ...rest } = row;
   const [url, thumbnailUrl] = await Promise.all([
     downloadLink(row.storageKey),
