@@ -231,6 +231,59 @@ export const ticketComments = pgTable(
   ],
 );
 
+export const NOTIFICATION_TYPES = ["ticket_assigned", "status_changed", "comment_added"] as const;
+export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
+
+// In-app notifications, created by the background worker.
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id").notNull(),
+    // Who the notification is for.
+    userId: uuid("user_id").notNull(),
+    // Who caused it (e.g. the manager who assigned the ticket).
+    actorId: uuid("actor_id").notNull(),
+    ticketId: uuid("ticket_id").notNull(),
+    type: varchar("type", { length: 30, enum: NOTIFICATION_TYPES }).notNull(),
+    message: text("message").notNull(),
+    // NULL = unread.
+    readAt: timestamp("read_at", { withTimezone: true }),
+    // Unique per job and recipient, so a retried job can't notify someone twice.
+    dedupeKey: varchar("dedupe_key", { length: 200 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      name: "notifications_organization_id_fkey",
+      columns: [t.organizationId],
+      foreignColumns: [organizations.id],
+    }),
+    foreignKey({
+      name: "notifications_user_id_organization_id_fkey",
+      columns: [t.userId, t.organizationId],
+      foreignColumns: [users.id, users.organizationId],
+    }),
+    foreignKey({
+      name: "notifications_actor_id_organization_id_fkey",
+      columns: [t.actorId, t.organizationId],
+      foreignColumns: [users.id, users.organizationId],
+    }),
+    foreignKey({
+      name: "notifications_ticket_id_organization_id_fkey",
+      columns: [t.ticketId, t.organizationId],
+      foreignColumns: [tickets.id, tickets.organizationId],
+    }),
+    check(
+      "notifications_type_check",
+      sql`${t.type} IN ('ticket_assigned', 'status_changed', 'comment_added')`,
+    ),
+    unique("notifications_dedupe_key_key").on(t.dedupeKey),
+    // "My notifications, newest first"
+    index("idx_notifications_user").on(t.organizationId, t.userId, t.createdAt),
+  ],
+);
+
 // One row per logged-in device. Only a SHA-256 hash of the token is stored,
 // so a leaked copy of this table can't be used to log in.
 export const sessions = pgTable(
@@ -268,3 +321,4 @@ export type Ticket = typeof tickets.$inferSelect;
 export type NewTicket = typeof tickets.$inferInsert;
 export type TicketEvent = typeof ticketEvents.$inferSelect;
 export type TicketComment = typeof ticketComments.$inferSelect;
+export type Notification = typeof notifications.$inferSelect;

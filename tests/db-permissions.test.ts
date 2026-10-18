@@ -51,6 +51,9 @@ describe.skipIf(!usingRestrictedAppRole())("the app's database role", () => {
     ["extend a session", sql`UPDATE sessions SET expires_at = now() + interval '1 year'`],
     ["edit a comment", sql`UPDATE ticket_comments SET body = 'edited'`],
     ["delete a comment", sql`DELETE FROM ticket_comments`],
+    ["edit a notification", sql`UPDATE notifications SET message = 'edited'`],
+    ["redirect a notification", sql`UPDATE notifications SET user_id = actor_id`],
+    ["delete a notification", sql`DELETE FROM notifications`],
   ])("can't %s", async (_name, query) => {
     await createTicket(await createOrg("a"));
 
@@ -66,5 +69,8 @@ describe.skipIf(!usingRestrictedAppRole())("the app's database role", () => {
     await db.execute(sql`INSERT INTO ticket_events (organization_id, ticket_id, actor_id, type)
                          VALUES (${a.org.id}, ${ticket.id}, ${a.manager.id}, 'assigned')`);
     await db.execute(sql`DELETE FROM sessions WHERE user_id = ${a.resident.id}`);
+    await db.execute(sql`INSERT INTO notifications (organization_id, user_id, actor_id, ticket_id, type, message, dedupe_key)
+                         VALUES (${a.org.id}, ${a.technician.id}, ${a.manager.id}, ${ticket.id}, 'ticket_assigned', 'x', 'k1')`);
+    await db.execute(sql`UPDATE notifications SET read_at = now() WHERE user_id = ${a.technician.id}`);
   });
 });
