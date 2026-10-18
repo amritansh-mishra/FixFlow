@@ -68,15 +68,20 @@ curl $API/api/tickets -H "Authorization: Bearer <token>"
 
 ## Local development
 
-Requires Node 24 (`nvm use`) and PostgreSQL.
+Requires Node 24 (`nvm use`) and Docker. No local PostgreSQL install is needed.
 
 ```bash
-cp .env.example .env      # then set DATABASE_URL
+docker compose up -d      # PostgreSQL 18 on localhost:5433 (data kept in a Docker volume)
+cp .env.example .env      # defaults already point at the Docker database
 npm install
-npm run db:migrate        # apply database migrations (add -- --status to preview)
-npm run dev               # start the API with auto-reload
-npm test                  # run the tests (uses a separate fixflow_test database)
+npm run db:migrate        # create the tables (add -- --status to preview)
+npm run dev               # start the API with auto-reload on http://localhost:3000
+npm test                  # run the tests (in a separate fixflow_test database)
 ```
+
+Useful Docker commands: `docker compose ps` (is it healthy?), `docker compose logs postgres`, `docker compose stop` (keeps data), `docker compose down -v` (deletes the data for a fresh start).
+
+Prefer your own PostgreSQL? Point both URLs in `.env` at it and see "Database users" below.
 
 Frontend, in a second terminal (the API must be running on port 3000):
 
@@ -163,7 +168,9 @@ Errors always look like `{ "error": { "code", "message", "details"? } }`. Valida
 
 The app should connect as `fixflow_app`, a restricted role created by migration `0004`. It can only read and change the rows the app needs; it can't alter tables or rewrite ticket history. Migrations and test setup connect as the table owner through `DATABASE_ADMIN_URL`.
 
-The role starts with no password and login disabled. One-time setup:
+**With Docker, this is automatic:** `docker/postgres-init.sql` creates the role with login on the container's first start.
+
+On your own PostgreSQL, the role starts with no password and login disabled. One-time setup:
 
 ```bash
 openssl rand -base64 24 | tr '+/' '-_' | tr -d '='   # generate a URL-safe password

@@ -1,0 +1,33 @@
+# Local development services. Start with: docker compose up -d
+#
+# This PostgreSQL is separate from any PostgreSQL installed on your machine:
+# it listens on port 5433 (not the usual 5432) and keeps its data in a Docker
+# volume. The passwords below are for local development only.
+services:
+  postgres:
+    # Official PostgreSQL 18, small Alpine Linux variant (same as CI).
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      # Created automatically on the first start.
+      POSTGRES_DB: fixflow
+    ports:
+      # Your machine's port 5433 → port 5432 inside the container.
+      # 127.0.0.1 = reachable from this computer only, not from other devices
+      # on the network (the dev password here is not a secret).
+      - "127.0.0.1:5433:5432"
+    volumes:
+      # Keep the data in a named volume so it survives container restarts.
+      - pgdata:/var/lib/postgresql
+      # Creates the restricted app role on first start (see the file).
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/01-app-role.sql:ro
+    healthcheck:
+      # Docker asks "are you ready?" every 5 seconds.
+      test: ["CMD-SHELL", "pg_isready -U postgres -d fixflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:

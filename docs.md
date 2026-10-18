@@ -34,7 +34,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 28. [Comments, search, pagination, stats, API docs and CI](#28-comments-search-pagination-stats-api-docs-and-ci)
 29. [The React frontend](#29-the-react-frontend)
 30. [Signup, join codes and the Team page](#30-signup-join-codes-and-the-team-page)
-31. [Glossary](#glossary)
+31. [Docker Compose for local development](#31-docker-compose-for-local-development)
+32. [Glossary](#glossary)
 
 ---
 
@@ -2094,6 +2095,82 @@ The permission tests were updated: "can't create a user" was replaced with "can'
 
 ---
 
+## 31. Docker Compose for local development
+
+### The problem
+
+To work on FixFlow, you had to **install PostgreSQL yourself**: the right version, a password, a database, the restricted `fixflow_app` user. Every new developer (or your next laptop) repeats all of that, and small differences cause "works on my machine" bugs.
+
+### What Docker is
+
+**Docker** runs programs in **containers**: isolated packages containing the program and everything it needs.
+
+**Analogy:** a shipping container. Whatever's inside, every ship and crane handles it the same way. A PostgreSQL container runs identically on a Mac, on Windows, or on a CI server.
+
+- An **image** is the template (like a recipe): `postgres:18-alpine` is the official PostgreSQL 18 image.
+- A **container** is a running copy of an image (the dish made from the recipe).
+- A **volume** is storage that lives **outside** the container, so data survives when the container is replaced.
+
+**Docker Compose** describes **several containers in one file** and starts them together. Today that's one (PostgreSQL); Redis will join later.
+
+### The file: `docker-compose.yml`
+
+```yaml
+services:
+  postgres:
+    image: postgres:18-alpine            # same PostgreSQL version as production and CI
+    environment:
+      POSTGRES_USER: postgres            # local-only dev credentials
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: fixflow               # created on first start
+    ports:
+      - "127.0.0.1:5433:5432"            # this computer's port 5433 → the container's 5432
+    volumes:
+      - pgdata:/var/lib/postgresql       # data survives restarts
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/01-app-role.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d fixflow"]
+```
+
+**Port 5433, not 5432:** a PostgreSQL was already installed on this Mac and using 5432. Running Docker's on 5433 keeps the two **completely separate**, so neither can affect the other. Port numbers are like apartment numbers in one building: two services can't share one.
+
+**Why `127.0.0.1:`?** The first version said `"5433:5432"`, and Docker reported `0.0.0.0:5433`: **listening on every network**. With the not-secret password `postgres`, anyone on the same Wi-Fi could have connected. `127.0.0.1` means **this computer only**. *Always check what address a dev service is exposed on.*
+
+**The healthcheck** runs `pg_isready` every few seconds. `docker compose ps` then shows `(healthy)` once PostgreSQL actually accepts connections, not merely "the process started".
+
+**The init script** (`docker/postgres-init.sql`): files in `/docker-entrypoint-initdb.d` run automatically **the first time** the container starts with an **empty** volume. Ours creates the `fixflow_app` role with login, so local development uses the same restricted user as production and CI, with no manual setup. (Because it only runs on an empty volume, the first volume had to be deleted once with `docker compose down -v`. It was empty, so nothing was lost.)
+
+### Using it
+
+```bash
+docker compose up -d        # start in the background (-d = detached)
+docker compose ps           # running? healthy?
+docker compose logs postgres
+docker compose stop         # stop, keep data
+docker compose down -v      # delete container AND data (fresh start)
+```
+
+`.env.example` now **defaults to the Docker database**, so a new developer runs `docker compose up -d`, `cp .env.example .env`, `npm run db:migrate`, and is ready. No PostgreSQL install, no setup steps.
+
+### Proof it works
+
+| Check | Result |
+|---|---|
+| Migrations on the empty Docker database | All 7 applied, 7 tables created |
+| App connects as | `fixflow_app` (the restricted role) |
+| Full test suite against Docker | **240 passed, 0 skipped**, including the 15 permission tests |
+| The real database on port 5432 | Unchanged |
+
+For those commands, **both** `DATABASE_URL` and `DATABASE_ADMIN_URL` were set to the Docker addresses (the lesson from chapter 28's seed mistake), and the real database was checked afterwards.
+
+### Small things worth knowing
+
+- **Docker Desktop must be running.** The first attempt failed with `failed to connect to the docker API … docker.sock`. The `docker` command was installed, but the **engine** (the background program that actually runs containers) wasn't started.
+- **Checking whether a port is in use:** `lsof` didn't show port 5432 as used, because PostgreSQL runs as a different system user and `lsof` can't see other users' processes without admin rights. `nc -z localhost 5432` (just try to connect) gave the real answer. When one check seems wrong, try a different method.
+- **Same version everywhere:** local Docker, CI and production all run PostgreSQL 18, which avoids surprises from version differences.
+
+---
+
 ## Glossary
 
 | Term | Simple meaning |
@@ -2209,3 +2286,11 @@ The permission tests were updated: "can't create a user" was replaced with "can'
 | **Cryptographically secure random** | Randomness that can't be predicted (e.g. `crypto.randomInt`), unlike `Math.random()` |
 | **Privilege escalation** | Gaining more permissions than you should have, e.g. a manager creating an admin account |
 | **Unique violation (23505)** | PostgreSQL's error when an insert would duplicate a value protected by a `UNIQUE` rule |
+| **Docker** | A tool that runs programs in isolated containers, the same way on any machine |
+| **Image** | A template for a container, e.g. `postgres:18-alpine` |
+| **Container** | A running instance of an image |
+| **Volume** | Storage outside a container, so data survives when the container is replaced |
+| **Docker Compose** | A file (`docker-compose.yml`) and command for running several containers together |
+| **Healthcheck** | A command Docker runs regularly to check a service is actually ready |
+| **Port binding** | Connecting a port on your computer to a port inside a container, e.g. `127.0.0.1:5433:5432` |
+| **127.0.0.1 vs 0.0.0.0** | Reachable from this computer only vs from every network the computer is on |
