@@ -16,15 +16,19 @@
     "db:studio": "drizzle-kit studio",
     "user:set-password": "tsx src/scripts/set-password.ts",
     "start:prod": "node dist/db/migrate.js && node dist/scripts/seed-demo.js && node dist/server.js",
-    "db:seed-demo": "tsx src/scripts/seed-demo.ts"
+    "db:seed-demo": "tsx src/scripts/seed-demo.ts",
+    "worker": "tsx watch src/worker.ts",
+    "worker:prod": "node dist/worker.js"
   },
   "keywords": [],
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "bullmq": "^6.3.11",
     "dotenv": "^18.0.4",
     "drizzle-orm": "^0.45.4",
     "express": "^5.2.1",
+    "ioredis": "^6.0.0",
     "pg": "^8.23.0",
     "zod": "^4.6.7"
   },

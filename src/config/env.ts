@@ -59,6 +59,8 @@ export const env = Object.freeze({
   databaseUrl: parseDatabaseUrl(required("DATABASE_URL")),
   // Browser origins allowed to call the API (the frontend), comma-separated.
   corsOrigins: parseOrigins(process.env.CORS_ORIGINS),
+  // Redis for background job queues (BullMQ). Defaults to the Docker Compose one.
+  redisUrl: process.env.REDIS_URL?.trim() || "redis://localhost:6379",
 });
 
 export const isProduction = env.nodeEnv === "production";
