@@ -37,7 +37,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 31. [Docker Compose for local development](#31-docker-compose-for-local-development)
 32. [Redis, BullMQ and in-app notifications](#32-redis-bullmq-and-in-app-notifications)
 33. [Email notifications, and three bugs the live checks found](#33-email-notifications-and-three-bugs-the-live-checks-found)
-34. [Glossary](#glossary)
+34. [Decision: Cloudflare R2 for file storage](#34-decision-cloudflare-r2-for-file-storage)
+35. [Glossary](#glossary)
 
 ---
 
@@ -2312,6 +2313,50 @@ The unit and integration tests all passed. These were found by **running the act
 
 ---
 
+## 34. Decision: Cloudflare R2 for file storage
+
+*A **decision record**: a short note saying what was chosen and why, written at the time, so the reasoning isn't lost.*
+
+### The need
+
+Residents should be able to **attach photos** to a ticket ("here's the leaking tap"). Photos are files, and files don't belong in PostgreSQL: they're large, and databases are built for rows, not images. They go in **object storage**, a service that stores files ("objects") in named containers ("buckets") and serves them over HTTP. The database only keeps a small record per photo (its key, size and type).
+
+### Why not Render?
+
+FixFlow is deployed on Render, and Render's servers have **no lasting disk**: files written there disappear on every deploy or restart. So photos need an outside storage service.
+
+### The options
+
+Most object storage services now speak the same **S3 API** (the interface Amazon S3 introduced), so the same code works with any of them; only settings change.
+
+| Option | Free allowance | Download ("egress") fees | Notes |
+|---|---|---|---|
+| **Amazon S3** | 5 GB, for the first 12 months only | Yes, you pay per GB downloaded | The original; the most features |
+| **Cloudflare R2** | **10 GB storage, permanently** | **None** | S3-compatible, simple pricing |
+| Backblaze B2 | 10 GB | Some free allowance | Also S3-compatible |
+
+### Decision: Cloudflare R2 in production
+
+1. **No egress fees.** Photos are uploaded once but **viewed many times**: by the resident, the technician, the manager. With S3, every view of every photo costs a little. With R2, viewing is free. For an image-heavy feature, that's the deciding factor.
+2. **A free tier that doesn't expire.** 10 GB is plenty for a portfolio project or a small organization, and it doesn't stop after 12 months like S3's.
+3. **S3-compatible.** We use the official **AWS SDK** (`@aws-sdk/client-s3`), pointed at R2's address. If we ever need Amazon S3, it's a settings change, not a rewrite. **No lock-in.**
+4. **Simpler setup** than AWS's permission system (IAM) for a single bucket: R2 issues an API token limited to that bucket.
+
+**What we give up:** some of S3's advanced features (for example, certain storage classes and event triggers), none of which FixFlow needs.
+
+### And on your own computer? A local stand-in
+
+For development and CI we use a **local S3-compatible server in Docker**, for the same reasons as Mailpit for email: no account, no cost, no real keys on laptops or in CI, works offline, and a clean store for every test run. The code talks to it exactly as it talks to R2:
+
+```
+Development / CI:  S3_ENDPOINT=http://localhost:<port>        (local stand-in in Docker)
+Production:        S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+```
+
+**Why not MinIO, the usual choice?** When checked (October 2026), **MinIO's GitHub repository had been archived**: read-only and no longer maintained since April 2026, and its Docker Hub listing didn't respond. Building on an abandoned project is a risk. **Garage** and **SeaweedFS** were both actively maintained (images published that day) and S3-compatible. *Lesson: check a dependency is still alive before adopting it, especially a popular one you "know".*
+
+---
+
 ## Glossary
 
 | Term | Simple meaning |
@@ -2452,3 +2497,9 @@ The unit and integration tests all passed. These were found by **running the act
 | **Flaky test** | A test that sometimes passes and sometimes fails without any code change; always worth investigating |
 | **Regression test** | A test that reproduces a fixed bug, so it can't silently come back |
 | **UUID** | A randomly generated ID that's unique everywhere, e.g. `6fea0bc4-561d-4bf1-…` |
+| **Decision record** | A short note recording what was decided and why, written at the time |
+| **Object storage** | A service that stores files ("objects") in "buckets" and serves them over HTTP, e.g. S3 or R2 |
+| **S3 API** | The interface Amazon S3 introduced; many storage services now support it, so code works with any of them |
+| **Egress fees** | Charges for data downloaded out of a cloud service |
+| **Cloudflare R2** | Cloudflare's S3-compatible object storage, with no egress fees |
+| **Vendor lock-in** | Being tied to one provider because switching would need major changes |
