@@ -1,9 +1,9 @@
 import { useState, type FormEvent, type ReactNode } from "react";
-import { errorMessage } from "../api";
+import { api, errorMessage } from "../api";
 import { useAuth } from "../auth";
 import { ErrorBox } from "../components/ui";
 
-type Mode = "login" | "signup" | "join";
+type Mode = "login" | "signup" | "join" | "forgot";
 
 const DEMO_ACCOUNTS = [
   { email: "manager@example.com", role: "Manager", hint: "sees everything, assigns work" },
@@ -39,7 +39,8 @@ export function LoginPage() {
           <Tab active={mode === "join"} onClick={() => setMode("join")}>Join with code</Tab>
         </div>
 
-        {mode === "login" && <SignInForm />}
+        {mode === "login" && <SignInForm onForgot={() => setMode("forgot")} />}
+        {mode === "forgot" && <ForgotForm onBack={() => setMode("login")} />}
         {mode === "signup" && <SignupForm />}
         {mode === "join" && <JoinForm />}
       </section>
@@ -73,7 +74,7 @@ function useSubmit(run: () => Promise<void>) {
   return { submit, error, busy };
 }
 
-function SignInForm() {
+function SignInForm({ onForgot }: { onForgot: () => void }) {
   const { login } = useAuth();
   const [organization, setOrganization] = useState("demo");
   const [email, setEmail] = useState("");
@@ -97,6 +98,9 @@ function SignInForm() {
         </label>
         <ErrorBox message={error} />
         <button className="button primary" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
+        <button type="button" className="link small forgot-link" onClick={onForgot}>
+          Forgot password?
+        </button>
       </form>
 
       <div className="demo-box">
@@ -220,6 +224,44 @@ function JoinForm() {
       </label>
       <ErrorBox message={error} />
       <button className="button primary" disabled={busy}>{busy ? "Joining…" : "Join"}</button>
+    </form>
+  );
+}
+
+function ForgotForm({ onBack }: { onBack: () => void }) {
+  const [organization, setOrganization] = useState("demo");
+  const [email, setEmail] = useState("");
+  const [sent, setSent] = useState<string | null>(null);
+  const { submit, error, busy } = useSubmit(async () => {
+    const res = await api<{ data: { message: string } }>("/api/auth/forgot-password", {
+      method: "POST",
+      body: { organization: organization.trim(), email: email.trim() },
+    });
+    setSent(res.data.message);
+  });
+
+  if (sent) {
+    return (
+      <div className="form">
+        <div className="success">{sent} Check your inbox (and spam folder). The link works for 30 minutes.</div>
+        <button type="button" className="button" onClick={onBack}>Back to sign in</button>
+      </div>
+    );
+  }
+  return (
+    <form onSubmit={submit} className="form">
+      <p className="muted small form-intro">Enter your organization and email, and we'll send you a link to choose a new password.</p>
+      <label>
+        Organization
+        <input value={organization} onChange={(e) => setOrganization(e.target.value)} required />
+      </label>
+      <label>
+        Email
+        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />
+      </label>
+      <ErrorBox message={error} />
+      <button className="button primary" disabled={busy}>{busy ? "Sending…" : "Send reset link"}</button>
+      <button type="button" className="link small" onClick={onBack}>Back to sign in</button>
     </form>
   );
 }

@@ -61,3 +61,15 @@ export const changePasswordBody = z
     message: "The new password must be different from the current one",
     path: ["newPassword"],
   });
+
+// POST /api/auth/forgot-password
+export const forgotPasswordBody = z.strictObject({
+  organization: z.string().trim().min(1).max(100),
+  email: z.email().max(255).transform((email) => email.toLowerCase()),
+});
+
+// POST /api/auth/reset-password
+export const resetPasswordBody = z.strictObject({
+  token: z.string().min(20).max(200),
+  newPassword: newPasswordSchema,
+});

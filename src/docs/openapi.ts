@@ -6,7 +6,14 @@
 
 import { z } from "zod";
 import { TICKET_EVENT_TYPES, TICKET_PRIORITIES, TICKET_STATUSES, USER_ROLES } from "../db/schema.js";
-import { changePasswordBody, joinBody, loginBody, signupBody } from "../modules/auth/auth.schemas.js";
+import {
+  changePasswordBody,
+  forgotPasswordBody,
+  joinBody,
+  loginBody,
+  resetPasswordBody,
+  signupBody,
+} from "../modules/auth/auth.schemas.js";
 import { listNotificationsQuery, markReadBody } from "../modules/notifications/notifications.routes.js";
 import { addPropertyBody } from "../modules/properties/properties.routes.js";
 import { addUserBody } from "../modules/users/users.routes.js";
@@ -303,6 +310,34 @@ export const openApiDocument = {
           "400": errorResponse("Invalid input, or the current password is wrong (WRONG_PASSWORD)"),
           "401": commonErrors["401"],
           "429": errorResponse("Too many wrong passwords"),
+        },
+      },
+    },
+    "/api/auth/forgot-password": {
+      post: {
+        tags: ["Auth"],
+        operationId: "forgotPassword",
+        summary: "Email a password reset link (same answer whether or not the account exists)",
+        description: "Rate-limited to 3 emails per account and 10 requests per IP per hour. The link works once, for 30 minutes.",
+        security: [],
+        requestBody: { required: true, content: json(fromZod(forgotPasswordBody)) },
+        responses: {
+          "200": { description: "Request accepted", content: dataOf({ type: "object", properties: { message: { type: "string" } } }) },
+          "400": commonErrors["400"],
+          "503": errorResponse("Temporarily unavailable"),
+        },
+      },
+    },
+    "/api/auth/reset-password": {
+      post: {
+        tags: ["Auth"],
+        operationId: "resetPassword",
+        summary: "Set a new password with the token from the reset email (logs out every device)",
+        security: [],
+        requestBody: { required: true, content: json(fromZod(resetPasswordBody)) },
+        responses: {
+          "200": { description: "Password reset", content: dataOf({ type: "object", properties: { reset: { type: "boolean" } } }) },
+          "400": errorResponse("Invalid input, or the link is invalid, expired or already used (INVALID_RESET_LINK)"),
         },
       },
     },

@@ -8,10 +8,13 @@ export type Route =
   | { name: "ticket"; id: string }
   | { name: "dashboard" }
   | { name: "team" }
-  | { name: "account" };
+  | { name: "account" }
+  | { name: "reset-password"; token: string | null };
 
 function parse(hash: string): Route {
-  const parts = hash.replace(/^#\/?/, "").split("/");
+  const [path = "", query = ""] = hash.replace(/^#\/?/, "").split("?");
+  if (path === "reset-password") return { name: "reset-password", token: new URLSearchParams(query).get("token") };
+  const parts = path.split("/");
   if (parts[0] === "tickets" && parts[1]) return { name: "ticket", id: parts[1] };
   if (parts[0] === "dashboard") return { name: "dashboard" };
   if (parts[0] === "team") return { name: "team" };

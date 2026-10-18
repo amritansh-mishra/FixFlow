@@ -3,9 +3,17 @@ import { env } from "../../config/env.js";
 import { validate } from "../../lib/validate.js";
 import { getAuth } from "../../middleware/auth.js";
 import { HttpError } from "../../middleware/errors.js";
-import { accountCreationLimit, accountKey, loginLimits } from "./auth.rate-limits.js";
-import { changePasswordBody, joinBody, loginBody, signupBody } from "./auth.schemas.js";
-import { changePassword, deleteSession, getCurrentUser, joinWithCode, login, signup } from "./auth.service.js";
+import { enqueuePasswordReset } from "../../jobs/queue.js";
+import { accountCreationLimit, accountKey, loginLimits, passwordResetLimits } from "./auth.rate-limits.js";
+import {
+  changePasswordBody,
+  forgotPasswordBody,
+  joinBody,
+  loginBody,
+  resetPasswordBody,
+  signupBody,
+} from "./auth.schemas.js";
+import { changePassword, deleteSession, getCurrentUser, joinWithCode, login, resetPassword, signup } from "./auth.service.js";
 
 // Security log lines, kept out of test output. Never include passwords.
 function securityLog(message: string) {
@@ -111,4 +119,43 @@ export const changePasswordHandler: RequestHandler = async (req, res) => {
   }
   loginLimits.account.reset(limitKey);
   res.status(200).json({ data: { changed: true } });
+};
+
+// Same answer whether or not the account exists, so this can't be used to
+// find out which emails are registered.
+const RESET_REQUESTED = "If an account with that email exists, we've sent a link to reset the password.";
+
+// POST /api/auth/forgot-password
+export const forgotPasswordHandler: RequestHandler = async (req, res) => {
+  const { organization, email } = validate(forgotPasswordBody, req.body, "request body");
+  const ip = req.ip ?? "unknown";
+  const account = accountKey(organization, email);
+
+  // Over the limit: still the same answer, just no email.
+  if (passwordResetLimits.ip.retryAfterMs(ip) > 0 || passwordResetLimits.account.retryAfterMs(account) > 0) {
+    securityLog(`Password reset rate-limited: org=${organization} ip=${ip}`);
+    res.status(200).json({ data: { message: RESET_REQUESTED } });
+    return;
+  }
+  passwordResetLimits.ip.hit(ip);
+  passwordResetLimits.account.hit(account);
+
+  // The worker looks the person up. The API always queues, so the response
+  // takes the same time either way (no timing clue).
+  try {
+    await enqueuePasswordReset(organization, email);
+  } catch (err) {
+    console.error("Could not queue password reset:", err);
+    throw new HttpError(503, "TEMPORARILY_UNAVAILABLE", "Password reset is temporarily unavailable. Try again shortly.");
+  }
+  res.status(200).json({ data: { message: RESET_REQUESTED } });
+};
+
+// POST /api/auth/reset-password
+export const resetPasswordHandler: RequestHandler = async (req, res) => {
+  const { token, newPassword } = validate(resetPasswordBody, req.body, "request body");
+  if (!(await resetPassword(token, newPassword))) {
+    throw new HttpError(400, "INVALID_RESET_LINK", "This reset link is invalid, expired or already used. Request a new one.");
+  }
+  res.status(200).json({ data: { reset: true } });
 };

@@ -335,6 +335,36 @@ export const notifications = pgTable(
   ],
 );
 
+// "Forgot password" links. Like sessions, only a SHA-256 hash of the token is
+// stored. Each link works once and expires after 30 minutes.
+export const passwordResets = pgTable(
+  "password_resets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id").notNull(),
+    userId: uuid("user_id").notNull(),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    // Set when the link is used (or replaced by a newer one).
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      name: "password_resets_organization_id_fkey",
+      columns: [t.organizationId],
+      foreignColumns: [organizations.id],
+    }),
+    foreignKey({
+      name: "password_resets_user_id_organization_id_fkey",
+      columns: [t.userId, t.organizationId],
+      foreignColumns: [users.id, users.organizationId],
+    }),
+    unique("password_resets_token_hash_key").on(t.tokenHash),
+    index("idx_password_resets_user").on(t.organizationId, t.userId),
+  ],
+);
+
 // One row per logged-in device. Only a SHA-256 hash of the token is stored,
 // so a leaked copy of this table can't be used to log in.
 export const sessions = pgTable(

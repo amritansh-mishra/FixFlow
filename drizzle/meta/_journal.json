@@ -78,6 +78,13 @@
       "when": 1792327132110,
       "tag": "0010_ticket_edits",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1792327512525,
+      "tag": "0011_password_resets",
+      "breakpoints": true
     }
   ]
 }

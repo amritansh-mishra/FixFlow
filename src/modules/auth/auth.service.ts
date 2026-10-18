@@ -3,7 +3,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq, gt, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import { organizations, properties, sessions, users, type UserRole } from "../../db/schema.js";
+import { organizations, passwordResets, properties, sessions, users, type UserRole } from "../../db/schema.js";
 import { generateJoinCode, isUniqueViolation } from "../../lib/codes.js";
 import { hashPassword, verifyPassword } from "../../lib/passwords.js";
 import { HttpError } from "../../middleware/errors.js";
@@ -21,7 +21,7 @@ export interface SessionUser {
 // The token is 32 random bytes: impossible to guess. Only its SHA-256 hash is
 // stored. A fast hash is fine here (unlike passwords) because the token is
 // already random and long, so there's nothing to brute-force.
-function hashToken(token: string): string {
+export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
@@ -213,4 +213,40 @@ export async function changePassword(
       );
   });
   return true;
+}
+
+// Uses a "forgot password" link. Returns false if the token is unknown,
+// expired or already used. Logs the user out everywhere.
+export async function resetPassword(token: string, newPassword: string): Promise<boolean> {
+  const passwordHash = await hashPassword(newPassword);
+  return db.transaction(async (tx) => {
+    // Claim the link atomically: only one request can flip used_at from NULL,
+    // so the same link can't be used twice even at the same moment.
+    const [reset] = await tx
+      .update(passwordResets)
+      .set({ usedAt: sql`now()` })
+      .where(
+        and(
+          eq(passwordResets.tokenHash, hashToken(token)),
+          sql`${passwordResets.usedAt} IS NULL`,
+          gt(passwordResets.expiresAt, sql`now()`),
+        ),
+      )
+      .returning({ userId: passwordResets.userId, organizationId: passwordResets.organizationId });
+    if (!reset) return false;
+
+    await tx
+      .update(users)
+      .set({ passwordHash })
+      .where(and(eq(users.id, reset.userId), eq(users.organizationId, reset.organizationId)));
+    // Any other outstanding links for this person stop working too.
+    await tx
+      .update(passwordResets)
+      .set({ usedAt: sql`now()` })
+      .where(and(eq(passwordResets.userId, reset.userId), sql`${passwordResets.usedAt} IS NULL`));
+    await tx
+      .delete(sessions)
+      .where(and(eq(sessions.userId, reset.userId), eq(sessions.organizationId, reset.organizationId)));
+    return true;
+  });
 }

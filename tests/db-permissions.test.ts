@@ -56,6 +56,8 @@ describe.skipIf(!usingRestrictedAppRole())("the app's database role", () => {
     ["redirect a notification", sql`UPDATE notifications SET user_id = actor_id`],
     ["delete a notification", sql`DELETE FROM notifications`],
     ["point an attachment at another file", sql`UPDATE ticket_attachments SET storage_key = 'other'`],
+    ["extend a reset link", sql`UPDATE password_resets SET expires_at = now() + interval '1 year'`],
+    ["change a reset link's token", sql`UPDATE password_resets SET token_hash = 'x'`],
   ])("can't %s", async (_name, query) => {
     await createTicket(await createOrg("a"));
 

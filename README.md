@@ -132,6 +132,8 @@ npm run user:set-password -- --org <organization-slug> --email <email>
 | `POST` | `/api/auth/login` | `{ organization, email, password }` → session token |
 | `POST` | `/api/auth/logout` | End the current session → 204 |
 | `GET` | `/api/auth/me` | The logged-in user |
+| `POST` | `/api/auth/forgot-password` | `{ organization, email }`: email a one-time reset link (same answer whether or not the account exists) |
+| `POST` | `/api/auth/reset-password` | `{ token, newPassword }`: use the link (works once, for 30 minutes; logs out every device) |
 | `POST` | `/api/auth/password` | Change your password: `{ currentPassword, newPassword }` (logs out your other sessions) |
 | `GET` | `/api/properties` | The organization's properties (needed to create tickets) |
 | `GET` | `/api/notifications?limit=` | Your notifications, newest first, with `unreadCount` |

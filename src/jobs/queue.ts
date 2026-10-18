@@ -30,10 +30,16 @@ export type NotificationJob =
   | (TicketJobBase & { kind: "comment_added"; commentId: string })
   // Email the recipient of one notification. Separate from the job that
   // created the notification, so a failed email is retried on its own.
-  | { kind: "send_email"; notificationId: string };
+  | { kind: "send_email"; notificationId: string }
+  // "Forgot password": the worker looks the person up and, if they exist,
+  // creates a one-time link and emails it. No token is ever stored in Redis.
+  | { kind: "password_reset"; organizationSlug: string; email: string };
 
 // The jobs the API queues when something happens to a ticket.
-export type TicketNotificationJob = Exclude<NotificationJob, { kind: "test" } | { kind: "send_email" }>;
+export type TicketNotificationJob = Exclude<
+  NotificationJob,
+  { kind: "test" } | { kind: "send_email" } | { kind: "password_reset" }
+>;
 
 // The same, before an eventId is assigned (Omit applied to each member).
 type WithoutEventId<T> = T extends unknown ? Omit<T, "eventId"> : never;
@@ -79,6 +85,12 @@ export async function enqueueNotification(event: NewTicketNotificationJob): Prom
 // whose ID already exists).
 export async function enqueueEmail(notificationId: string): Promise<void> {
   await notificationsQueue().add("send_email", { kind: "send_email", notificationId }, { jobId: `email-${notificationId}` });
+}
+
+// Queues a "forgot password" request. Throws if Redis is unavailable; the
+// caller decides what to tell the user.
+export async function enqueuePasswordReset(organizationSlug: string, email: string): Promise<void> {
+  await notificationsQueue().add("password_reset", { kind: "password_reset", organizationSlug, email });
 }
 
 export async function closeQueue(): Promise<void> {

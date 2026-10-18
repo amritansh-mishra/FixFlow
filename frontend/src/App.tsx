@@ -3,6 +3,7 @@ import { NotificationBell } from "./components/NotificationBell";
 import { AccountPage } from "./pages/Account";
 import { DashboardPage } from "./pages/Dashboard";
 import { LoginPage } from "./pages/Login";
+import { ResetPasswordPage } from "./pages/ResetPassword";
 import { TeamPage } from "./pages/Team";
 import { TicketDetailPage } from "./pages/TicketDetail";
 import { TicketsPage } from "./pages/Tickets";
@@ -12,6 +13,8 @@ export function App() {
   const { user, logout } = useAuth();
   const route = useRoute();
 
+  // Opened from an email link, so it must work while logged out.
+  if (route.name === "reset-password") return <ResetPasswordPage token={route.token} />;
   if (!user) return <LoginPage />;
 
   return (

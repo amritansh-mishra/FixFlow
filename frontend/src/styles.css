@@ -830,6 +830,10 @@ textarea:focus {
   gap: 0.5rem;
 }
 
+.forgot-link {
+  align-self: center;
+}
+
 /* Phones */
 @media (max-width: 760px) {
   .topbar {

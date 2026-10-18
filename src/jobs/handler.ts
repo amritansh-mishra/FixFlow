@@ -4,6 +4,7 @@
 import type { Job } from "bullmq";
 import { processEmailJob } from "./email.js";
 import { processNotificationJob } from "./notifications.js";
+import { processPasswordResetJob } from "./password-reset.js";
 import { enqueueEmail, type NotificationJob } from "./queue.js";
 
 export async function handleJob(job: Pick<Job<NotificationJob>, "id" | "data">): Promise<string> {
@@ -11,6 +12,9 @@ export async function handleJob(job: Pick<Job<NotificationJob>, "id" | "data">):
   switch (data.kind) {
     case "test":
       return `test job: ${data.message}`;
+
+    case "password_reset":
+      return `password reset request: ${await processPasswordResetJob(data.organizationSlug, data.email)}`;
 
     case "send_email":
       return `email for notification ${data.notificationId}: ${await processEmailJob(data.notificationId)}`;

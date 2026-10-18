@@ -19,6 +19,13 @@ export const loginLimits = {
 // nobody can mass-create organizations or flood one with fake residents.
 export const accountCreationLimit = new FixedWindowLimiter(10, 60 * 60 * 1000);
 
+// "Forgot password": 3 emails per account and 10 requests per IP per hour,
+// so nobody can flood someone's inbox.
+export const passwordResetLimits = {
+  account: new FixedWindowLimiter(3, 60 * 60 * 1000),
+  ip: new FixedWindowLimiter(10, 60 * 60 * 1000),
+};
+
 export function accountKey(organization: string, email: string): string {
   return `${organization}\n${email.toLowerCase()}`;
 }
@@ -28,6 +35,8 @@ export function resetLoginLimits(): void {
   loginLimits.account.clear();
   loginLimits.ip.clear();
   accountCreationLimit.clear();
+  passwordResetLimits.account.clear();
+  passwordResetLimits.ip.clear();
 }
 
 // Clear out old windows every minute. unref() lets the process exit anyway.
@@ -35,4 +44,6 @@ setInterval(() => {
   loginLimits.account.prune();
   loginLimits.ip.prune();
   accountCreationLimit.prune();
+  passwordResetLimits.account.prune();
+  passwordResetLimits.ip.prune();
 }, 60_000).unref();

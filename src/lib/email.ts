@@ -7,6 +7,12 @@
 import nodemailer, { type Transporter } from "nodemailer";
 import { env } from "../config/env.js";
 
+// HTML-escape text from the database (titles, names) before putting it in an
+// email's HTML, so "<b>" or "O'Brien" show as text instead of markup.
+export function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+}
+
 export interface EmailMessage {
   to: string;
   subject: string;

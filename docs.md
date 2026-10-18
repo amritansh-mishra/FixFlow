@@ -2519,6 +2519,39 @@ Change any of `title`, `description`, `priority` (at least one).
 
 **A testing gotcha worth remembering:** the first race test took 5.9 s and got 403 instead of 409. A supertest request **doesn't start until something awaits it** (`.then()`), so the test waited 5 s for a request that wasn't running, released the lock, and only then sent it. By then the ticket really was "in progress", so 403 was the correct answer. The fix was `.then((r) => r)` to start it, plus a loud error if the request never reaches the lock. Passing 5 out of 5 times in ~0.2 s, and failing when the race protection is removed, shows the test now really tests the race.
 
+
+### 2. "Forgot password?"
+
+```
+POST /api/auth/forgot-password  { organization, email }   → always: "If an account exists, we've sent a link…"
+          (worker) → creates a one-time token, emails  APP_URL/#/reset-password?token=…
+POST /api/auth/reset-password   { token, newPassword }    → password set, every device logged out
+```
+
+**The security details, and why each one matters:**
+
+| Detail | Why |
+|---|---|
+| **The same answer** whether or not the account exists | Otherwise anyone could check which emails are registered (*user enumeration*, chapter 24) |
+| The API **always queues a job**; the **worker** looks the person up | The response takes the same time either way, so there's no timing clue |
+| **The worker creates the token** at the moment it sends the email | The secret token is **never stored in Redis**; job data only holds the organization and email |
+| Only the token's **SHA-256 hash** is saved | A leaked database backup can't be used to reset passwords (same as sessions) |
+| The link **expires after 30 minutes** and **works once** | A forgotten email in an inbox doesn't stay a key to the account |
+| Using the link is an **atomic claim**: `UPDATE … SET used_at = now() WHERE used_at IS NULL … RETURNING` | Two simultaneous uses can't both succeed. Only one request can flip `used_at` from empty (tested by sending both at once: one 200, one 400) |
+| A **newer link replaces older ones** | Only the latest email works |
+| Reset **logs out every device** | If someone else had the password, their sessions end |
+| **3 emails per account, 10 requests per IP, per hour** | Nobody can flood someone's inbox. Over the limit gives the same answer, just no email |
+
+**Frontend:** "Forgot password?" under the sign-in button, and a reset page at `#/reset-password?token=…`. The app shows that page **even when logged out**, because you arrive from an email link.
+
+**Database:** migration `0011` adds `password_resets`. The app's database user can create links and mark them used, but can't change a link's token, owner or expiry (permission tests).
+
+**Tested end to end:** request → worker → the email in Mailpit → the token read from the email's text → reset → login. Breaking it on purpose: reusable links, not logging out devices, and storing the raw token were each caught.
+
+**Two mistakes of mine during the live check:**
+1. **zsh doesn't split variables into words.** I put all the test settings into one shell variable and passed it to `env`. zsh (unlike bash) passed it as **one** giant value, so the test API got a nonsense database address and returned 500s. *Write each setting out explicitly.*
+2. **Printing raw errors can leak secrets.** That broken address appeared in an error message I printed, including the first few characters of the local database password. I deleted the logs and flagged it. *Mask connection strings before printing logs.*
+
 ---
 
 ## Glossary
@@ -2673,3 +2706,4 @@ Change any of `title`, `description`, `priority` (at least one).
 | **Pre-signed URL** | A link signed by the server that grants temporary access to one file, then expires |
 | **415 Unsupported Media Type** | HTTP status for "this kind of file isn't accepted" |
 | **Orphaned file** | A file left in storage with nothing referring to it any more |
+| **Atomic claim** | Marking something as taken in a single database statement that only one request can win |
