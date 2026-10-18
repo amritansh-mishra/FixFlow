@@ -85,15 +85,18 @@ export async function api<T>(
   options: { method?: string; body?: unknown; token?: string | null } = {},
 ): Promise<T> {
   const headers: Record<string, string> = {};
-  if (options.body !== undefined) headers["Content-Type"] = "application/json";
   if (options.token) headers.Authorization = `Bearer ${options.token}`;
+  // Files go as FormData: the browser sets the multipart Content-Type (with
+  // its boundary) itself, so we mustn't. Everything else is JSON.
+  const isForm = options.body instanceof FormData;
+  if (options.body !== undefined && !isForm) headers["Content-Type"] = "application/json";
 
   let res: Response;
   try {
     res = await fetch(`${BASE_URL}${path}`, {
       method: options.method ?? "GET",
       headers,
-      body: options.body === undefined ? null : JSON.stringify(options.body),
+      body: options.body === undefined ? null : isForm ? (options.body as FormData) : JSON.stringify(options.body),
     });
   } catch {
     throw new ApiError(0, "NETWORK_ERROR", "Can't reach the server. It may be waking up; try again in a moment.");
@@ -127,3 +130,20 @@ export interface AppNotification {
   readAt: string | null;
   createdAt: string;
 }
+
+export interface Attachment {
+  id: string;
+  ticketId: string;
+  uploadedBy: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  createdAt: string;
+  // Signed download link, valid for 5 minutes.
+  url: string;
+}
+
+// Same limits as the API, checked first so people get instant feedback.
+export const PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp"];
+export const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+export const MAX_PHOTOS_PER_TICKET = 10;

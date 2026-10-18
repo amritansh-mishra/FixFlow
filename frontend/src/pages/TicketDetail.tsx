@@ -12,6 +12,7 @@ import {
   type User,
 } from "../api";
 import { isManager, useAuth } from "../auth";
+import { TicketPhotos } from "../components/TicketPhotos";
 import { ErrorBox, formatDate, PriorityBadge, Spinner, StatusBadge, statusLabel } from "../components/ui";
 
 // The same rules the API enforces (tickets.policy.ts), used here only to
@@ -164,6 +165,8 @@ export function TicketDetailPage({ id }: { id: string }) {
               )}
             </div>
           )}
+
+          <TicketPhotos ticketId={id} />
 
           <CommentsSection
             comments={comments}

@@ -2446,9 +2446,19 @@ In development the bucket is **created automatically** at startup. In production
 - **CI:** GitHub's `services:` can't pass SeaweedFS its start command, so CI starts it with `docker run` as a normal step, using the same keys file as local development, and waits for `/healthz`.
 - **Live check:** a photo uploaded through the running API came back through its signed link byte-for-byte identical.
 
+### The frontend: photos on the ticket page
+
+`frontend/src/components/TicketPhotos.tsx`, between the ticket's details and its comments:
+
+- **Thumbnails** in a grid (`object-fit: cover` crops each photo to a neat square). **Click** one to open it full size in an overlay. Escape or a click outside closes it.
+- **"+ Add photo"** opens the file picker, limited to JPEG, PNG and WebP. The browser checks the type and the 5 MB size **first, for instant feedback**. These checks are only for a good experience; the server checks everything again, including the file's real contents. A "(3/10)" counter shows the limit, and the button turns off at 10.
+- **Uploading files from the browser:** files go as `FormData`. The `api()` helper now **doesn't** set `Content-Type` for FormData, because the browser must add the multipart type itself, including the "boundary" string that separates the parts. Setting it by hand breaks the upload.
+- **Links that expire:** download links last 5 minutes, so the list **refreshes every 4 minutes** while the page is open. If an image still fails to load (e.g. after the laptop slept), `onError` fetches fresh links.
+- `loading="lazy"` lets the browser load thumbnails only when they're about to scroll into view.
+
 ### Not yet
 
-Deleting photos, thumbnails (smaller previews), and the frontend upload button, which is the next step.
+Deleting photos, and smaller thumbnail files (currently the full photo is shown scaled down).
 
 ---
 
