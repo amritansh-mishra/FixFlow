@@ -2,6 +2,7 @@
 //
 //   POST /api/tickets/:id/attachments   upload one photo (form field "photo")
 //   GET  /api/tickets/:id/attachments   list photos, each with a short-lived download link
+//   DELETE /api/tickets/:id/attachments/:attachmentId   remove one (uploader, manager, admin)
 //
 // Anyone who can see the ticket can add and view its photos.
 
@@ -9,10 +10,11 @@ import { randomUUID } from "node:crypto";
 import { and, asc, count, eq } from "drizzle-orm";
 import { Router, type RequestHandler } from "express";
 import multer from "multer";
+import { z } from "zod";
 import { db } from "../../db/index.js";
 import { MAX_ATTACHMENT_BYTES, ticketAttachments, type TicketAttachment } from "../../db/schema.js";
 import { detectImageType } from "../../lib/image-type.js";
-import { downloadLink, putFile } from "../../lib/storage.js";
+import { deleteFile, downloadLink, putFile } from "../../lib/storage.js";
 import { validate } from "../../lib/validate.js";
 import { getAuth, requireUser } from "../../middleware/auth.js";
 import { HttpError } from "../../middleware/errors.js";
@@ -20,6 +22,8 @@ import { ticketIdParams } from "../tickets/tickets.schemas.js";
 import { getTicket } from "../tickets/tickets.service.js";
 
 export const MAX_ATTACHMENTS_PER_TICKET = 10;
+
+const attachmentIdParams = z.object({ attachmentId: z.uuid() });
 
 // mergeParams: see :id from the parent route (/api/tickets/:id/attachments).
 export const attachmentsRouter = Router({ mergeParams: true });
@@ -117,4 +121,38 @@ attachmentsRouter.get("/", loadTicket, async (req, res) => {
     )
     .orderBy(asc(ticketAttachments.createdAt), asc(ticketAttachments.id));
   res.status(200).json({ data: await Promise.all(rows.map(withLink)) });
+});
+
+// DELETE /api/tickets/:id/attachments/:attachmentId
+// The uploader can remove their own photo; managers and admins can remove any.
+attachmentsRouter.delete("/:attachmentId", loadTicket, async (req, res) => {
+  const auth = getAuth(req);
+  const { attachmentId } = validate(attachmentIdParams, req.params, "attachment id");
+
+  const [photo] = await db
+    .select({ id: ticketAttachments.id, uploadedBy: ticketAttachments.uploadedBy, storageKey: ticketAttachments.storageKey })
+    .from(ticketAttachments)
+    .where(
+      and(
+        eq(ticketAttachments.id, attachmentId),
+        eq(ticketAttachments.ticketId, res.locals.ticketId),
+        eq(ticketAttachments.organizationId, auth.organizationId),
+      ),
+    );
+  if (!photo) throw new HttpError(404, "ATTACHMENT_NOT_FOUND", "Photo not found");
+
+  const isManager = auth.role === "manager" || auth.role === "admin";
+  if (photo.uploadedBy !== auth.userId && !isManager) {
+    throw new HttpError(403, "FORBIDDEN", "Only the person who added a photo, or a manager, can remove it");
+  }
+
+  // Record first, then the file. If removing the file fails, the worst case
+  // is an unused file in storage, never a broken photo on the page.
+  await db.delete(ticketAttachments).where(eq(ticketAttachments.id, photo.id));
+  try {
+    await deleteFile(photo.storageKey);
+  } catch (err) {
+    console.error(`Photo ${photo.id} removed, but deleting its file failed (orphaned: ${photo.storageKey}):`, err);
+  }
+  res.status(204).end();
 });

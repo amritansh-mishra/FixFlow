@@ -64,6 +64,13 @@
       "when": 1792325215595,
       "tag": "0008_ticket_attachments",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792326292681,
+      "tag": "0009_attachment_delete_grant",
+      "breakpoints": true
     }
   ]
 }

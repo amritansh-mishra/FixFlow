@@ -597,6 +597,19 @@ export const openApiDocument = {
         },
       },
     },
+    "/api/tickets/{id}/attachments/{attachmentId}": {
+      delete: {
+        tags: ["Tickets"],
+        operationId: "deleteAttachment",
+        summary: "Remove a photo (the uploader, a manager or an admin)",
+        parameters: [ticketIdParam, { name: "attachmentId", in: "path", required: true, schema: uuid }],
+        responses: {
+          "204": { description: "Removed" },
+          ...ticketErrors,
+          "403": errorResponse("Not the uploader, a manager or an admin"),
+        },
+      },
+    },
     "/api/tickets/{id}/assign": {
       patch: {
         tags: ["Tickets"],

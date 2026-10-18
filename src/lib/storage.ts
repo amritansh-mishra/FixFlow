@@ -3,6 +3,7 @@
 
 import {
   CreateBucketCommand,
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadBucketCommand,
   PutObjectCommand,
@@ -54,4 +55,8 @@ export async function ensureBucket(): Promise<void> {
   } catch {
     await s3().send(new CreateBucketCommand({ Bucket: env.s3.bucket }));
   }
+}
+
+export async function deleteFile(key: string): Promise<void> {
+  await s3().send(new DeleteObjectCommand({ Bucket: env.s3.bucket, Key: key }));
 }

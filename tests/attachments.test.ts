@@ -196,3 +196,57 @@ describe("GET /api/tickets/:id/attachments", () => {
     expect((await fetch(tampered)).status).toBe(403);
   });
 });
+
+describe("DELETE /api/tickets/:id/attachments/:attachmentId", () => {
+  const remove = (ticketId: string, attachmentId: string, asUser: AsUser) =>
+    request(app).delete(`/api/tickets/${ticketId}/attachments/${attachmentId}`).auth(asUser.token, { type: "bearer" });
+
+  it("lets the uploader remove their photo: the record and the file are gone", async () => {
+    const a = await createOrg("a");
+    const ticket = await createTicket(a);
+    const { body } = await upload(ticket.id, a.resident, PNG);
+
+    const res = await remove(ticket.id, body.data.id, a.resident);
+
+    expect(res.status).toBe(204);
+    expect(await adminDb.select().from(ticketAttachments)).toHaveLength(0);
+    expect((await fetch(body.data.url)).status).toBe(404); // the file itself was deleted from storage
+  });
+
+  it.each(["manager", "admin"] as const)("lets a %s remove anyone's photo", async (role) => {
+    const a = await createOrg("a");
+    const ticket = await createTicket(a);
+    const { body } = await upload(ticket.id, a.resident, PNG);
+
+    expect((await remove(ticket.id, body.data.id, a[role])).status).toBe(204);
+  });
+
+  it("forbids someone who can see the ticket but didn't upload the photo", async () => {
+    const a = await createOrg("a");
+    const ticket = await createTicket(a, { status: "assigned", assignedTo: a.technician.id });
+    const { body } = await upload(ticket.id, a.resident, PNG);
+
+    const res = await remove(ticket.id, body.data.id, a.technician);
+
+    expect(res.status).toBe(403);
+    expect(await adminDb.select().from(ticketAttachments)).toHaveLength(1);
+  });
+
+  it("returns 404 to people who can't see the ticket", async () => {
+    const a = await createOrg("a");
+    const ticket = await createTicket(a);
+    const { body } = await upload(ticket.id, a.resident, PNG);
+
+    expect((await remove(ticket.id, body.data.id, a.resident2)).status).toBe(404);
+    expect(await adminDb.select().from(ticketAttachments)).toHaveLength(1);
+  });
+
+  it("returns 404 for a photo that belongs to a different ticket", async () => {
+    const a = await createOrg("a");
+    const ticket = await createTicket(a);
+    const otherTicket = await createTicket(a);
+    const { body } = await upload(otherTicket.id, a.resident, PNG);
+
+    expect((await remove(ticket.id, body.data.id, a.resident)).status).toBe(404);
+  });
+});
