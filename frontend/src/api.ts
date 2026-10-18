@@ -117,3 +117,13 @@ export function errorMessage(err: unknown): string {
   }
   return "Something went wrong";
 }
+
+export interface AppNotification {
+  id: string;
+  type: "ticket_assigned" | "status_changed" | "comment_added";
+  message: string;
+  ticketId: string;
+  actorId: string;
+  readAt: string | null;
+  createdAt: string;
+}

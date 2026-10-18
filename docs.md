@@ -2244,9 +2244,20 @@ Both only ever touch **your own** notifications, in **your** organization. Marki
 - **CI** now starts a Redis service alongside PostgreSQL.
 - **Breaking it on purpose:** notifying people about their own actions, removing the duplicate protection, and letting mark-as-read touch other people's notifications were each caught.
 
+### The frontend bell 🔔
+
+`frontend/src/components/NotificationBell.tsx` sits in the top bar:
+
+- A **red badge** shows the unread count ("9+" above nine).
+- **Polling:** it asks `GET /api/notifications` every **30 seconds**, but only while the tab is **visible** (`document.visibilityState`), and once more as soon as you come back to the tab. A forgotten background tab doesn't keep hitting the server.
+- **The dropdown:** newest first, unread ones highlighted with a blue dot. Clicking one **marks it read and opens the ticket**. "Mark all as read" clears the badge. Clicking outside or pressing **Escape** closes it.
+- **Accessibility:** the button's label says "Notifications, 3 unread", and `aria-expanded` tells screen readers whether the panel is open.
+
+**Why polling, not instant push?** Polling (asking every 30 s) is simple and works on any host. Instant delivery would need a connection the server can push through (WebSockets or Server-Sent Events). For maintenance tickets a few seconds' delay is fine, so it's a good later upgrade, not a need now.
+
 ### Next
 
-The frontend bell 🔔, then email (Mailpit locally) as a second kind of job on the same queue.
+Email notifications (Mailpit locally) as a second kind of job on the same queue.
 
 ---
 
@@ -2382,3 +2393,5 @@ The frontend bell 🔔, then email (Mailpit locally) as a second kind of job on 
 | **Idempotency** | Doing something twice has the same effect as doing it once |
 | **Best effort** | Try to do it, but don't fail the main action if it can't be done |
 | **Outbox pattern** | Saving outgoing messages in the database in the same transaction, then delivering them separately, so none are lost |
+| **Polling** | Asking the server for updates at regular intervals |
+| **WebSockets / Server-Sent Events** | Connections that let the server push updates to the browser instantly |

@@ -1,4 +1,5 @@
 import { isManager, useAuth } from "./auth";
+import { NotificationBell } from "./components/NotificationBell";
 import { DashboardPage } from "./pages/Dashboard";
 import { LoginPage } from "./pages/Login";
 import { TeamPage } from "./pages/Team";
@@ -34,6 +35,7 @@ export function App() {
           )}
         </nav>
         <div className="user-chip">
+          <NotificationBell />
           <span>
             {user.name} <span className="muted small">· {user.role}</span>
           </span>

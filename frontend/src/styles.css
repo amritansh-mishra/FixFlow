@@ -616,6 +616,103 @@ textarea:focus {
   gap: 0.35rem;
 }
 
+/* Notification bell */
+.bell {
+  position: relative;
+}
+.bell-button {
+  position: relative;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 0.3rem 0.5rem;
+  font-size: 1.15rem;
+  cursor: pointer;
+  line-height: 1;
+}
+.bell-button:hover,
+.bell-button[aria-expanded="true"] {
+  background: #f3f4f6;
+}
+.bell-count {
+  position: absolute;
+  top: -2px;
+  right: -4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #dc2626;
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+.bell-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: min(360px, calc(100vw - 2rem));
+  padding: 0;
+  z-index: 10;
+  overflow: hidden;
+}
+.bell-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.bell-empty {
+  padding: 1.25rem 1rem;
+  margin: 0;
+  text-align: center;
+}
+.bell-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 380px;
+  overflow-y: auto;
+}
+.bell-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.7rem 1rem;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  text-align: left;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--text);
+  cursor: pointer;
+}
+.bell-item:hover {
+  background: #f9fafb;
+}
+.bell-item.unread {
+  background: #eff6ff;
+}
+.bell-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 0.15rem;
+}
+.bell-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 0.4rem;
+  border-radius: 50%;
+  background: var(--primary);
+  flex-shrink: 0;
+}
+
 /* Phones */
 @media (max-width: 760px) {
   .topbar {
