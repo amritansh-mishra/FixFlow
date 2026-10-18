@@ -132,6 +132,7 @@ npm run user:set-password -- --org <organization-slug> --email <email>
 | `POST` | `/api/auth/login` | `{ organization, email, password }` → session token |
 | `POST` | `/api/auth/logout` | End the current session → 204 |
 | `GET` | `/api/auth/me` | The logged-in user |
+| `POST` | `/api/auth/password` | Change your password: `{ currentPassword, newPassword }` (logs out your other sessions) |
 | `GET` | `/api/properties` | The organization's properties (needed to create tickets) |
 | `GET` | `/api/notifications?limit=` | Your notifications, newest first, with `unreadCount` |
 | `POST` | `/api/notifications/read` | Mark read: `{ ids: [...] }` or `{}` for all |
@@ -150,6 +151,7 @@ npm run user:set-password -- --org <organization-slug> --email <email>
 | `GET` | `/api/tickets/:id/comments` | The ticket's comments, with author name and role |
 | `POST` | `/api/tickets/:id/comments` | Add a comment: `{ body }` |
 | `GET` | `/api/tickets/:id/attachments` | The ticket's photos, each with a download link valid for 5 minutes |
+| `DELETE` | `/api/tickets/:id/attachments/:attachmentId` | Remove a photo (uploader, manager, admin) |
 | `POST` | `/api/tickets/:id/attachments` | Upload a photo (form field `photo`; JPEG/PNG/WebP, ≤ 5 MB, ≤ 10 per ticket) |
 
 ### Ticket workflow

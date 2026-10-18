@@ -1,5 +1,6 @@
 import { isManager, useAuth } from "./auth";
 import { NotificationBell } from "./components/NotificationBell";
+import { AccountPage } from "./pages/Account";
 import { DashboardPage } from "./pages/Dashboard";
 import { LoginPage } from "./pages/Login";
 import { TeamPage } from "./pages/Team";
@@ -36,9 +37,9 @@ export function App() {
         </nav>
         <div className="user-chip">
           <NotificationBell />
-          <span>
+          <a href="#/account" className="user-link" title="Account and password">
             {user.name} <span className="muted small">· {user.role}</span>
-          </span>
+          </a>
           <button className="button small" onClick={() => void logout()}>
             Log out
           </button>
@@ -49,6 +50,7 @@ export function App() {
         {route.name === "ticket" && <TicketDetailPage key={route.id} id={route.id} />}
         {route.name === "dashboard" && (isManager(user) ? <DashboardPage /> : <TicketsPage />)}
         {route.name === "team" && (isManager(user) ? <TeamPage /> : <TicketsPage />)}
+        {route.name === "account" && <AccountPage />}
         {route.name === "tickets" && <TicketsPage />}
       </main>
     </>

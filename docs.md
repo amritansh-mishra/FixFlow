@@ -39,7 +39,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 33. [Email notifications, and three bugs the live checks found](#33-email-notifications-and-three-bugs-the-live-checks-found)
 34. [Decision: Cloudflare R2 for file storage](#34-decision-cloudflare-r2-for-file-storage)
 35. [Photo attachments: secure uploads and signed links](#35-photo-attachments-secure-uploads-and-signed-links)
-36. [Glossary](#glossary)
+36. [Polish: change password and deleting photos](#36-polish-change-password-and-deleting-photos)
+37. [Glossary](#glossary)
 
 ---
 
@@ -2460,6 +2461,40 @@ In development the bucket is **created automatically** at startup. In production
 
 Deleting photos, and smaller thumbnail files (currently the full photo is shown scaled down).
 
+
+---
+
+## 36. Polish: change password and deleting photos
+
+Two gaps closed before moving on.
+
+### Change password: `POST /api/auth/password`
+
+**Why:** staff added from the Team page start with a **temporary password** chosen by a manager, and nobody could change a password except through the CLI.
+
+| Rule | Why |
+|---|---|
+| The **current password is required** | Someone who finds your laptop logged in can't silently take over the account |
+| Wrong current passwords share the **login failure limit** (429 after 5) | Otherwise a stolen session could be used to brute-force the password |
+| New password: 12+ characters and **different** from the current one | The usual strength rule; "changing" to the same password protects nothing |
+| **Other sessions are logged out**, but this one stays | If someone else knew the old password, their sessions end, and you aren't kicked out mid-change |
+
+The "different" rule uses Zod's `.refine()`, a custom check that compares two fields. Its error is attached to `newPassword`, so the form can show it in the right place.
+
+**Frontend:** click your name in the top bar to open the **Account** page. It asks for the new password **twice**, because a typo in a new password would lock you out.
+
+### Deleting photos: `DELETE /api/tickets/:id/attachments/:attachmentId`
+
+- **Who:** the person who uploaded it, or a manager or admin. Others who can see the ticket get **403**; people who can't see it get **404** (as always, outsiders learn nothing).
+- **Order:** delete the **database record first**, then the file. If deleting the file fails, the worst case is an unused file in storage (logged as "orphaned"), never a photo on the page that's missing its file.
+- **Permissions, widened deliberately:** migration `0009` grants the restricted database user `DELETE` on attachment records. The permission test "can't delete an attachment record" was **removed on purpose** (it's now allowed), while "can't point an attachment at another file" stays. *When a permission changes, update the test that describes it; don't just delete failures.*
+- **Tested** that the file is really gone from storage: its old download link returns 404.
+- **Frontend:** a **Remove** button in the full-size photo view, shown only to people allowed to delete, with a confirmation first.
+
+### Verified
+
+301 tests (13 new). Breaking it on purpose: logging out the current session too, not counting wrong current passwords, letting anyone delete any photo, and deleting the record but leaving the file were each caught. Both features were also exercised through the frontend's proxy.
+
 ---
 
 ## Glossary
@@ -2613,3 +2648,4 @@ Deleting photos, and smaller thumbnail files (currently the full photo is shown 
 | **Path traversal** | An attack using names like `../../` to reach files outside the intended folder |
 | **Pre-signed URL** | A link signed by the server that grants temporary access to one file, then expires |
 | **415 Unsupported Media Type** | HTTP status for "this kind of file isn't accepted" |
+| **Orphaned file** | A file left in storage with nothing referring to it any more |

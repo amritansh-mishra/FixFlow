@@ -786,8 +786,29 @@ textarea:focus {
 .lightbox figcaption .muted {
   color: #d1d5db;
 }
-.lightbox figcaption .button {
+.lightbox figcaption .button:first-of-type {
   margin-left: auto;
+}
+
+/* Account and small extras */
+.page.narrow {
+  max-width: 560px;
+}
+.user-link {
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.2rem 0.4rem;
+}
+.user-link:hover {
+  background: #f3f4f6;
+}
+.button.danger {
+  background: #fee2e2;
+  border-color: #fecaca;
+  color: #b91c1c;
+}
+.button.danger:hover:not(:disabled) {
+  background: #fecaca;
 }
 
 /* Phones */

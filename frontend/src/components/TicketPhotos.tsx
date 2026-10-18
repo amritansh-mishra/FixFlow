@@ -2,14 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import { api, errorMessage, MAX_PHOTO_BYTES, MAX_PHOTOS_PER_TICKET, PHOTO_TYPES, type Attachment } from "../api";
-import { useAuth } from "../auth";
+import { isManager, useAuth } from "../auth";
 import { ErrorBox, formatDate } from "./ui";
 
 // Download links expire after 5 minutes; refresh them a bit sooner.
 const REFRESH_MS = 4 * 60 * 1000;
 
 export function TicketPhotos({ ticketId }: { ticketId: string }) {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [photos, setPhotos] = useState<Attachment[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -63,6 +63,21 @@ export function TicketPhotos({ ticketId }: { ticketId: string }) {
     }
   }
 
+  async function removePhoto(photo: Attachment) {
+    if (!window.confirm(`Remove "${photo.fileName}"? This can't be undone.`)) return;
+    setError(null);
+    try {
+      await api(`/api/tickets/${ticketId}/attachments/${photo.id}`, { method: "DELETE", token });
+      setViewing(null);
+      await load();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
+  // Same rule as the API: the uploader, a manager or an admin.
+  const canRemove = (photo: Attachment) => photo.uploadedBy === user?.id || isManager(user);
+
   const full = photos.length >= MAX_PHOTOS_PER_TICKET;
 
   return (
@@ -109,6 +124,11 @@ export function TicketPhotos({ ticketId }: { ticketId: string }) {
               <span className="muted small">
                 {formatDate(viewing.createdAt)} · {Math.max(1, Math.round(viewing.sizeBytes / 1024))} KB
               </span>
+              {canRemove(viewing) && (
+                <button className="button small danger" onClick={() => void removePhoto(viewing)}>
+                  Remove
+                </button>
+              )}
               <button className="button small" onClick={() => setViewing(null)}>
                 Close
               </button>
