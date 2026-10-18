@@ -184,3 +184,33 @@ export async function joinWithCode(input: JoinBody) {
     throw err;
   }
 }
+
+// Changes the caller's own password. Returns false if the current password
+// is wrong. Every other session of this user is ended (anyone else who knew
+// the old password is logged out); the session making the change stays.
+export async function changePassword(
+  auth: { userId: string; organizationId: string; sessionId: string },
+  currentPassword: string,
+  newPassword: string,
+): Promise<boolean> {
+  const [user] = await db
+    .select({ passwordHash: users.passwordHash })
+    .from(users)
+    .where(and(eq(users.id, auth.userId), eq(users.organizationId, auth.organizationId)));
+  if (!user?.passwordHash || !(await verifyPassword(currentPassword, user.passwordHash))) return false;
+
+  const passwordHash = await hashPassword(newPassword);
+  await db.transaction(async (tx) => {
+    await tx.update(users).set({ passwordHash }).where(eq(users.id, auth.userId));
+    await tx
+      .delete(sessions)
+      .where(
+        and(
+          eq(sessions.userId, auth.userId),
+          eq(sessions.organizationId, auth.organizationId),
+          sql`${sessions.id} <> ${auth.sessionId}`,
+        ),
+      );
+  });
+  return true;
+}

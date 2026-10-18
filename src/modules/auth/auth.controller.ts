@@ -4,8 +4,8 @@ import { validate } from "../../lib/validate.js";
 import { getAuth } from "../../middleware/auth.js";
 import { HttpError } from "../../middleware/errors.js";
 import { accountCreationLimit, accountKey, loginLimits } from "./auth.rate-limits.js";
-import { joinBody, loginBody, signupBody } from "./auth.schemas.js";
-import { deleteSession, getCurrentUser, joinWithCode, login, signup } from "./auth.service.js";
+import { changePasswordBody, joinBody, loginBody, signupBody } from "./auth.schemas.js";
+import { changePassword, deleteSession, getCurrentUser, joinWithCode, login, signup } from "./auth.service.js";
 
 // Security log lines, kept out of test output. Never include passwords.
 function securityLog(message: string) {
@@ -88,4 +88,27 @@ export const joinHandler: RequestHandler = async (req, res) => {
 
   const result = await joinWithCode(body);
   res.status(201).json({ data: { token: result.token, expiresAt: result.expiresAt, user: result.user } });
+};
+
+// POST /api/auth/password
+export const changePasswordHandler: RequestHandler = async (req, res) => {
+  const auth = getAuth(req);
+  const { currentPassword, newPassword } = validate(changePasswordBody, req.body, "request body");
+
+  // Wrong current passwords count toward the same limit as failed logins, so
+  // a stolen session can't be used to guess the password.
+  const limitKey = `password-change\n${auth.userId}`;
+  const waitMs = loginLimits.account.retryAfterMs(limitKey);
+  if (waitMs > 0) {
+    res.set("Retry-After", String(Math.ceil(waitMs / 1000)));
+    throw new HttpError(429, "TOO_MANY_ATTEMPTS", "Too many wrong passwords. Try again later.");
+  }
+
+  if (!(await changePassword(auth, currentPassword, newPassword))) {
+    loginLimits.account.hit(limitKey);
+    securityLog(`Failed password change: user=${auth.userId} ip=${req.ip}`);
+    throw new HttpError(400, "WRONG_PASSWORD", "Your current password is incorrect");
+  }
+  loginLimits.account.reset(limitKey);
+  res.status(200).json({ data: { changed: true } });
 };

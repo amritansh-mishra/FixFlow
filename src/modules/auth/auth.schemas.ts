@@ -50,3 +50,14 @@ export const joinBody = z.strictObject({
 
 export type SignupBody = z.infer<typeof signupBody>;
 export type JoinBody = z.infer<typeof joinBody>;
+
+// POST /api/auth/password
+export const changePasswordBody = z
+  .strictObject({
+    currentPassword: z.string().min(1).max(128),
+    newPassword: newPasswordSchema,
+  })
+  .refine((body) => body.newPassword !== body.currentPassword, {
+    message: "The new password must be different from the current one",
+    path: ["newPassword"],
+  });

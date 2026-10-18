@@ -289,3 +289,66 @@ describe("login rate limiting", () => {
     expect(res.status).toBe(429);
   });
 });
+
+describe("POST /api/auth/password", () => {
+  const NEW_PASSWORD = "a brand new passphrase";
+  const change = (token: string, body: object) =>
+    request(app).post("/api/auth/password").auth(token, { type: "bearer" }).send(body);
+
+  it("changes the password: the new one works, the old one doesn't", async () => {
+    const a = await withPassword(await createOrg("a"));
+
+    const res = await change(a.resident.token, { currentPassword: PASSWORD, newPassword: NEW_PASSWORD });
+
+    expect(res.status).toBe(200);
+    expect((await login({ organization: "a", email: a.resident.email, password: NEW_PASSWORD })).status).toBe(200);
+    expect((await login({ organization: "a", email: a.resident.email, password: PASSWORD })).status).toBe(401);
+  });
+
+  it("logs out the user's other sessions but keeps this one", async () => {
+    const a = await withPassword(await createOrg("a"));
+    const other = (await login({ organization: "a", email: a.resident.email, password: PASSWORD })).body.data.token;
+
+    await change(a.resident.token, { currentPassword: PASSWORD, newPassword: NEW_PASSWORD });
+
+    expect((await request(app).get("/api/auth/me").auth(a.resident.token, { type: "bearer" })).status).toBe(200);
+    expect((await request(app).get("/api/auth/me").auth(other, { type: "bearer" })).status).toBe(401);
+  });
+
+  it("requires the correct current password, and changes nothing otherwise", async () => {
+    const a = await withPassword(await createOrg("a"));
+
+    const res = await change(a.resident.token, { currentPassword: "not my password", newPassword: NEW_PASSWORD });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("WRONG_PASSWORD");
+    expect((await login({ organization: "a", email: a.resident.email, password: PASSWORD })).status).toBe(200);
+  });
+
+  it.each([
+    ["a short new password", { currentPassword: PASSWORD, newPassword: "short" }],
+    ["the same password again", { currentPassword: PASSWORD, newPassword: PASSWORD }],
+  ])("rejects %s", async (_name, body) => {
+    const a = await withPassword(await createOrg("a"));
+
+    const res = await change(a.resident.token, body);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.details.map((d: { path: string }) => d.path)).toContain("newPassword");
+  });
+
+  it("blocks guessing: 5 wrong current passwords → 429, even with the right one", async () => {
+    const a = await withPassword(await createOrg("a"));
+    for (let i = 0; i < 5; i++) {
+      expect((await change(a.resident.token, { currentPassword: `guess-${i}`, newPassword: NEW_PASSWORD })).status).toBe(400);
+    }
+
+    const res = await change(a.resident.token, { currentPassword: PASSWORD, newPassword: NEW_PASSWORD });
+
+    expect(res.status).toBe(429);
+  });
+
+  it("requires login", async () => {
+    expect((await request(app).post("/api/auth/password").send({})).status).toBe(401);
+  });
+});

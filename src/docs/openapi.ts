@@ -6,7 +6,7 @@
 
 import { z } from "zod";
 import { TICKET_EVENT_TYPES, TICKET_PRIORITIES, TICKET_STATUSES, USER_ROLES } from "../db/schema.js";
-import { joinBody, loginBody, signupBody } from "../modules/auth/auth.schemas.js";
+import { changePasswordBody, joinBody, loginBody, signupBody } from "../modules/auth/auth.schemas.js";
 import { listNotificationsQuery, markReadBody } from "../modules/notifications/notifications.routes.js";
 import { addPropertyBody } from "../modules/properties/properties.routes.js";
 import { addUserBody } from "../modules/users/users.routes.js";
@@ -288,6 +288,21 @@ export const openApiDocument = {
         operationId: "logout",
         summary: "End the current session",
         responses: { "204": { description: "Logged out" }, "401": commonErrors["401"] },
+      },
+    },
+    "/api/auth/password": {
+      post: {
+        tags: ["Auth"],
+        operationId: "changePassword",
+        summary: "Change your password (logs out your other sessions)",
+        description: "Wrong current passwords count toward the same limit as failed logins.",
+        requestBody: { required: true, content: json(fromZod(changePasswordBody)) },
+        responses: {
+          "200": { description: "Changed", content: dataOf({ type: "object", properties: { changed: { type: "boolean" } } }) },
+          "400": errorResponse("Invalid input, or the current password is wrong (WRONG_PASSWORD)"),
+          "401": commonErrors["401"],
+          "429": errorResponse("Too many wrong passwords"),
+        },
       },
     },
     "/api/auth/me": {
