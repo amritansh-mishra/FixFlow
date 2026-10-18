@@ -42,7 +42,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 36. [Polish: change password and deleting photos](#36-polish-change-password-and-deleting-photos)
 37. [More polish: editing tickets, password reset, thumbnails](#37-more-polish-editing-tickets-password-reset-thumbnails)
 38. [GraphQL](#38-graphql)
-39. [Glossary](#glossary)
+39. [Deployment: Render, Neon and the free tier](#39-deployment-render-neon-and-the-free-tier)
+40. [Glossary](#glossary)
 
 ---
 
@@ -2717,6 +2718,72 @@ The **100 KB request-body limit** from chapter 3 also applies to `/graphql`, so 
 
 ---
 
+## 39. Deployment: Render, Neon and the free tier
+
+**Deploying** means running the app on someone else's always-on computer, with a public address. The goal: a link a recruiter can click, **for free**, that keeps working.
+
+### What the free tier gives (checked October 2026)
+
+| Need | Render free? | What we did |
+|---|---|---|
+| API (web service) | ✅ Sleeps after 15 min idle; ~1 min to wake | Render |
+| Frontend (static files) | ✅ | Render |
+| PostgreSQL | ⚠️ **Deleted after 30 days** | **Neon** instead (free, doesn't expire) |
+| Redis (Key Value) | ✅ Memory only, lost on restart | Render |
+| Background worker | ❌ About $7/month | **Run it inside the API** |
+| File storage (R2) | Cloudflare wants a card first | Later |
+| Email | Needs a provider account | Later |
+
+These were **your choices** (each has a trade-off), recorded here so the reasoning isn't lost.
+
+### Running the worker inside the API
+
+Chapter 31 made the worker a **separate process** so slow jobs can't slow the API and a crash in one can't take down the other. On the free tier there's no second process, so a setting brings it inside:
+
+```ts
+// src/server.ts
+const worker = env.runWorkerInApi ? startWorker() : undefined;
+```
+
+The worker code moved into `src/jobs/worker.ts` (`startWorker()`), used by **both** `src/worker.ts` (the standalone process) and the API. **Same code, two ways to run it**: one setting decides. On shutdown the API now also finishes running jobs and closes the queue. Like a small restaurant where the waiter also cooks: fine when it's quiet, and you hire a cook (a paid worker) when it gets busy.
+
+### Why Neon's *direct* connection
+
+Neon offers two addresses: **pooled** (through PgBouncer, a connection sharer) and **direct**. Our migration runner takes an **advisory lock** (chapter 20) that belongs to one connection for its whole session. A pooler in transaction mode hands each statement to *any* connection, so the lock could be taken on one and released on another. **The direct address avoids that.**
+
+### Redis settings in render.yaml
+
+- `maxmemoryPolicy: noeviction`: when memory is full, Redis normally may **delete** old keys. For a job queue that would silently lose jobs, so BullMQ requires "never evict; refuse new writes instead".
+- `ipAllowList: []`: only our own Render services can connect, nothing from the internet.
+
+### Secrets: `sync: false`
+
+In `render.yaml`, `sync: false` means "**ask the person deploying** for this value". The database URL and demo password are typed into Render's dashboard, never into Git. Values that aren't secret (`NODE_ENV`, `RUN_WORKER_IN_API`) are written in the file.
+
+### A rehearsal before the real thing
+
+Before deploying, everything ran locally **the way Render will run it**:
+- a brand-new empty database and `NODE_ENV=production`
+- `npm run build` then `npm run start:prod`
+- no file storage, no email, and the worker inside the API
+
+The results:
+
+| Check | Result |
+|---|---|
+| Startup | Migrations created every table, the demo organization was seeded, the worker started |
+| Assigning a ticket | The technician got a notification from the in-API worker; the email was "skipped" (no mail server) |
+| Uploading a real photo | `503 STORAGE_UNAVAILABLE`, a clear message instead of a crash. Listing photos still works |
+| GraphQL | Works. The GraphiQL explorer is off in production |
+| CORS | Only the allowed frontend address is accepted |
+| `SIGTERM` (what Render sends when redeploying) | Clean shutdown |
+
+**Lesson:** a rehearsal that copies production settings catches problems on your machine, where they're cheap, instead of during the real deploy. One trap: our `.env` file is loaded automatically, and it points at the **real local database**. The rehearsal used `DOTENV_CONFIG_PATH=/dev/null` to ignore `.env`, and set **both** database URLs explicitly.
+
+### Known trade-off
+
+On Neon the app connects as the **database owner** for now. Migration 0004 still creates the restricted `fixflow_app` role there, so switching the app to it later is a small hardening step.
+
 ## Glossary
 
 | Term | Simple meaning |
@@ -2883,3 +2950,7 @@ The **100 KB request-body limit** from chapter 3 also applies to `/graphql`, so 
 | **Alias (GraphQL)** | A different name for a field in a query, letting the same field appear several times |
 | **Introspection** | A GraphQL query that asks the schema to describe itself (used by explorers for autocomplete) |
 | **Fragment (GraphQL)** | A reusable piece of a query, included with `...Name` |
+| **Free tier** | A hosting plan that costs nothing, with limits (sleeping, size, expiry) |
+| **Connection pooler** | A middleman (e.g. PgBouncer) that shares a few database connections among many clients |
+| **Eviction (Redis)** | Redis deleting keys to free memory when it's full |
+| **Rehearsal (deploy)** | Running the app locally with production settings to catch problems before the real deploy |

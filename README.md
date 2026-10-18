@@ -124,7 +124,8 @@ Each tool was picked for a reason. Here's the reason, and what we chose it over.
 
 Being honest about what FixFlow doesn't do (yet):
 
-- **Not deployed yet.** `render.yaml` currently creates the API, the frontend and the database. The background worker, Redis, a real email provider and Cloudflare R2 still have to be added for notifications, emails and photos to work online.
+- **Photos and email are off online for now.** The deployed app has no file storage (Cloudflare R2) or email provider configured yet, so uploads are refused and emails are skipped. In-app notifications work.
+- **The worker shares the API's process online.** Render's free tier has no background workers, so a slow job could slow the API down slightly. With a paid worker it becomes its own process again (one setting).
 - **Free hosting sleeps.** On Render's free tier, the first request after a quiet period can take about a minute.
 - **No live updates.** Notifications appear when the page checks for them, not instantly (no WebSockets).
 - **Login rate limits live in memory.** That's fine for one server; with several servers, each would keep its own count. They'd need to move into Redis.
@@ -139,7 +140,7 @@ Being honest about what FixFlow doesn't do (yet):
 
 Ideas for what comes next, roughly in order of usefulness:
 
-1. **Finish the deployment:** worker, Redis, email and R2 on Render.
+1. **Switch on photos and email online:** Cloudflare R2 and an email provider.
 2. **Live updates** with WebSockets or Server-Sent Events, so new tickets and status changes appear instantly.
 3. **Deadlines and escalation:** a due date per priority, with a reminder or escalation to the manager when it's missed.
 4. **Recurring maintenance:** scheduled tickets for routine checks.
@@ -174,19 +175,28 @@ curl -X POST $API/api/auth/login -H "Content-Type: application/json" \
 curl $API/api/tickets -H "Authorization: Bearer <token>"
 ```
 
-## Deploying to Render
+## Deploying to Render (free)
 
-`render.yaml` creates three things: the API (`fixflow-api`), the frontend (`fixflow-web`, a static site) and a PostgreSQL database.
+The setup: the **API** and **frontend** on Render, **Redis** as Render's free Key Value store, and the **database on Neon** (Render's free database is deleted after 30 days; Neon's free one isn't). Render's free tier has no background workers, so the API runs the notifications worker itself (`RUN_WORKER_IN_API=true`).
 
-1. Push this repository to GitHub.
-2. In the Render dashboard: **New → Blueprint**, then pick the repository.
-3. When asked, set:
-   - `DEMO_PASSWORD` (at least 12 characters): the password of the demo accounts.
-   - `CORS_ORIGINS`: the frontend's URL, e.g. `https://fixflow-web.onrender.com`.
-   - `VITE_API_URL`: the API's URL, e.g. `https://fixflow-api.onrender.com`.
+**1. Database (Neon).** Create a free project at [neon.tech](https://neon.tech). Under **Connect**, turn **connection pooling off** and copy the connection string. Use this *direct* one (its host has no `-pooler`): migrations hold a lock that needs a direct connection.
 
-   The URLs are shown once the services are created. If you don't know them yet, enter a placeholder, then fix both in each service's **Environment** tab and redeploy. The frontend reads `VITE_API_URL` at build time.
-4. Every API deploy runs migrations, seeds the demo organization once, then starts the server (`npm run start:prod`).
+**2. Render.** In the dashboard: **New → Blueprint**, pick this repository. `render.yaml` creates `fixflow-api`, `fixflow-web` and `fixflow-redis`. When asked, fill in:
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | The Neon connection string from step 1 |
+| `DEMO_PASSWORD` | A password of at least 12 characters for the demo accounts |
+| `CORS_ORIGINS` | The frontend's URL, e.g. `https://fixflow-web.onrender.com` |
+| `VITE_API_URL` | The API's URL, e.g. `https://fixflow-api.onrender.com` |
+
+The URLs are shown once the services exist. If you don't know them yet, enter a placeholder, fix both later in each service's **Environment** tab, and redeploy (the frontend reads `VITE_API_URL` at build time).
+
+**3. Check it.** Open `https://<api>/health` (should say `"ok"`), then log in on the frontend with `manager@example.com` and your demo password.
+
+Every API deploy runs migrations, seeds the demo organization once, then starts the server (`npm run start:prod`).
+
+**Not switched on yet:** photo uploads (set `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` for Cloudflare R2; until then uploads answer `503 STORAGE_UNAVAILABLE`) and email (set `SMTP_URL`, `EMAIL_FROM` and `APP_URL`; until then emails are skipped and in-app notifications still work).
 
 ## Local development
 

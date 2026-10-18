@@ -6,27 +6,14 @@
 //
 // It runs alongside the API, not inside it, so slow work (like sending email)
 // never makes an API request wait, and a crash here can't take the API down.
+// (On hosting without a free worker, RUN_WORKER_IN_API=true runs the same
+// worker inside the API process instead: see src/server.ts.)
 
-import { Worker, type Job } from "bullmq";
 import { pool } from "./db/index.js";
-import { handleJob } from "./jobs/handler.js";
-import { closeQueue, NOTIFICATIONS_QUEUE, redisConnection, type NotificationJob } from "./jobs/queue.js";
+import { closeQueue } from "./jobs/queue.js";
+import { startWorker } from "./jobs/worker.js";
 
-async function handle(job: Job<NotificationJob>) {
-  console.log(`[worker] ${await handleJob(job)}`);
-}
-
-const worker = new Worker<NotificationJob>(NOTIFICATIONS_QUEUE, handle, {
-  // Workers wait on Redis indefinitely; BullMQ requires retries to be unlimited.
-  connection: { ...redisConnection, maxRetriesPerRequest: null },
-  // How many jobs to run at the same time.
-  concurrency: 5,
-});
-
-worker.on("ready", () => console.log(`[worker] listening on queue "${NOTIFICATIONS_QUEUE}"`));
-worker.on("failed", (job, err) =>
-  console.error(`[worker] job ${job?.id} (${job?.data.kind}) failed, attempt ${job?.attemptsMade}:`, err.message),
-);
+const worker = startWorker();
 
 // Graceful shutdown: finish the jobs in progress, then exit.
 async function shutdown(signal: string) {

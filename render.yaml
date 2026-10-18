@@ -1,10 +1,6 @@
-# Render Blueprint: the API (web service), the frontend (static site) and a PostgreSQL database.
+# Render Blueprint: the API (web service), the frontend (static site) and Redis.
+# The database is on Neon (free, doesn't expire); its URL is a secret you paste in.
 # Deploy: Render dashboard → New → Blueprint → pick this repository.
-databases:
-  - name: fixflow-db
-    plan: free
-    databaseName: fixflow
-    user: fixflow
 
 services:
   - type: web
@@ -19,10 +15,10 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Neon's DIRECT connection string (not the "-pooler" one: migrations
+      # hold a lock that needs a direct connection). You're asked for it.
       - key: DATABASE_URL
-        fromDatabase:
-          name: fixflow-db
-          property: connectionString
+        sync: false
       - key: SEED_DEMO
         value: "true"
       # Password for the demo accounts; you're asked for it when deploying.
@@ -31,6 +27,28 @@ services:
       # The frontend's URL (e.g. https://fixflow-web.onrender.com), so browsers may call the API.
       - key: CORS_ORIGINS
         sync: false
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: fixflow-redis
+          property: connectionString
+      # Render's free tier has no background workers, so the API runs the
+      # notifications worker itself. With a paid worker, remove this and add
+      # a worker service running `npm run worker:prod`.
+      - key: RUN_WORKER_IN_API
+        value: "true"
+      # Not set yet, on purpose: SMTP_URL (emails are skipped without it) and
+      # S3_* (photo uploads answer 503 STORAGE_UNAVAILABLE without them).
+
+  # Redis for the job queue. Free plan: memory only, so queued jobs are lost
+  # if it restarts (acceptable for notifications).
+  - type: keyvalue
+    name: fixflow-redis
+    plan: free
+    # Only Render services in this account can connect; nothing from outside.
+    ipAllowList: []
+    # BullMQ needs Redis to never evict keys when memory is full.
+    maxmemoryPolicy: noeviction
 
   # The React frontend, built once and served as static files.
   - type: web

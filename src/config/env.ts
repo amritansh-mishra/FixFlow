@@ -63,6 +63,9 @@ export const env = Object.freeze({
   corsOrigins: parseOrigins(process.env.CORS_ORIGINS),
   // Redis for background job queues (BullMQ). Defaults to the Docker Compose one.
   redisUrl: process.env.REDIS_URL?.trim() || "redis://localhost:6379",
+  // Run the background worker inside the API process (for hosting without a
+  // free separate worker, e.g. Render's free tier). Normally it's separate.
+  runWorkerInApi: process.env.RUN_WORKER_IN_API === "true",
   // Where email is sent from. In development it defaults to Mailpit (Docker
   // Compose). In production, emails are skipped unless SMTP_URL is set.
   smtpUrl: process.env.SMTP_URL?.trim() || (nodeEnv === "production" ? undefined : "smtp://127.0.0.1:1025"),
