@@ -308,3 +308,78 @@ describe("GraphQL mutations", () => {
     expect(jobs.map((j) => j.data.kind)).toEqual(["ticket_assigned"]);
   });
 });
+
+describe("GraphQL query limits", () => {
+  const countDbQueries = async (run: () => Promise<unknown>) => {
+    let count = 0;
+    const original = pool.query.bind(pool);
+    pool.query = ((...args: Parameters<typeof pool.query>) => {
+      count++;
+      return original(...args);
+    }) as typeof pool.query;
+    try {
+      await run();
+    } finally {
+      pool.query = original;
+    }
+    return count;
+  };
+
+  it("rejects an alias flood before running any ticket query", async () => {
+    const a = await createOrg("a");
+    const flood = `{ ${Array.from({ length: 50 }, (_, i) => `a${i}: tickets(first: 50) { nodes { id } }`).join(" ")} }`;
+
+    let result: Awaited<ReturnType<typeof gql>> | undefined;
+    const queries = await countDbQueries(async () => {
+      result = await gql(flood, {}, a.manager);
+    });
+
+    expect(result!.errors![0]).toMatchObject({ extensions: { code: "QUERY_TOO_COMPLEX" } });
+    expect(result!.errors![0]!.message).toContain("Too many top-level fields (50)");
+    expect(queries).toBeLessThanOrEqual(1); // only the session lookup, no ticket queries
+  });
+
+  it("rejects a query selecting too many fields", async () => {
+    const a = await createOrg("a");
+    const wide = `{ tickets { nodes { ${Array.from({ length: 210 }, (_, i) => `f${i}: id`).join(" ")} } } }`;
+
+    const { errors } = await gql(wide, {}, a.manager);
+
+    expect(errors![0]!.message).toContain("too many fields");
+  });
+
+  it("rejects a query nested too deeply (counting through fragments)", async () => {
+    const a = await createOrg("a");
+    // Introspection mixed with real fields isn't exempt, and nests deeply.
+    // The depth hides inside a fragment: it must still be counted.
+    const deep = `{ me { id } __schema { types { fields { type { ...Deep } } } } }
+      fragment Deep on __Type { ofType { ofType { ofType { ofType { name } } } } }`;
+
+    const { errors } = await gql(deep, {}, a.manager);
+
+    expect(errors![0]!.message).toContain("too deeply nested");
+  });
+
+  it("still allows GraphiQL's full introspection query", async () => {
+    const { getIntrospectionQuery } = await import("graphql");
+
+    const { data, errors } = await gql(getIntrospectionQuery());
+
+    expect(errors).toBeUndefined();
+    expect(data!.__schema.queryType.name).toBe("Query");
+  });
+
+  it("allows a normal full ticket-page query", async () => {
+    const a = await createOrg("a");
+    const ticket = await createTicket(a);
+
+    const { errors } = await gql(
+      `query ($id: ID!) { me { name } ticket(id: $id) { title property { name } createdBy { name } assignedTo { name }
+        comments { body author { name } } history { type actor { name } } photos { thumbnailUrl uploadedBy { name } } } }`,
+      { id: ticket.id },
+      a.resident,
+    );
+
+    expect(errors).toBeUndefined();
+  });
+});

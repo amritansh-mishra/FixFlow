@@ -7,6 +7,7 @@ import { HttpError } from "../middleware/errors.js";
 import { findSessionUser } from "../modules/auth/auth.service.js";
 import { builder, type GraphQLContext } from "./builder.js";
 import { createLoaders } from "./loaders.js";
+import { queryLimits } from "./limits.js";
 import "./types.js"; // registers the types and queries on the builder
 
 const BEARER_RE = /^Bearer ([A-Za-z0-9_-]{20,200})$/i;
@@ -27,6 +28,8 @@ function findHttpError(error: unknown): HttpError | null {
 export const yoga = createYoga<{ req: Request; res: Response }, GraphQLContext>({
   schema,
   graphqlEndpoint: "/graphql",
+  // Reject overly large or deep queries before they run (see limits.ts).
+  plugins: [queryLimits],
   // The query explorer (GraphiQL) in development only.
   graphiql: !isProduction,
   // CORS is handled by the app's own middleware (CORS_ORIGINS).

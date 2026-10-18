@@ -2676,9 +2676,44 @@ mutation {
 
 **"Left out" vs "null":** GraphQL distinguishes a field you didn't send from one you set to `null`. In `editTicket`, `description: null` **clears** the description, while leaving it out **doesn't touch it**. A small helper (`sentFields`) keeps only the fields actually sent, so the shared schema sees the same shape a REST body would have.
 
-### Next
+### Protecting the endpoint from expensive queries
 
-Protecting the endpoint from overly expensive queries (depth and size limits).
+GraphQL lets the **client** shape the query, and that can be abused. **Aliases** repeat a field under different names:
+
+```graphql
+{ a1: tickets(first: 50) { nodes { id } }
+  a2: tickets(first: 50) { nodes { id } }
+  … a50: … }
+```
+
+That's one HTTP request costing 50 database queries (and far more with nested fields). `src/graphql/limits.ts` adds a **validation rule** that runs **before any resolver**, so a rejected query never touches the database:
+
+| Limit | Value | Stops |
+|---|---|---|
+| Top-level fields (aliases count) | 10 | Alias floods |
+| Total fields | 200 | Very wide queries |
+| Depth | 8 | Deep nesting, including inside **fragments** (reusable pieces of a query), which are followed when counting |
+
+Rejected queries get `QUERY_TOO_COMPLEX`. A test counts database queries during an alias flood: **only the session lookup**, no ticket queries at all.
+
+**Introspection is exempt.** GraphiQL loads the schema with a big **introspection** query (`__schema { … }`) that is deeper than 8 levels. It reads the schema from memory, never the database, so operations made **only** of introspection fields skip the limits. A test runs the standard introspection query to make sure the explorer keeps working. (Introspection mixed with real fields is *not* exempt.)
+
+The **100 KB request-body limit** from chapter 3 also applies to `/graphql`, so a query can't be arbitrarily large either.
+
+**Breaking it on purpose:** removing the limits failed 3 tests; not following fragments failed the fragment test.
+
+### Summary: GraphQL in FixFlow
+
+| | |
+|---|---|
+| Endpoint | `POST /graphql` (GraphiQL explorer at the same URL in development) |
+| Login | The same `Authorization: Bearer` session token as REST |
+| Queries | `me`, `ticket(id)`, `tickets(status, priority, q, first, after)` with nested property, people, comments, history and photos |
+| Mutations | `createTicket`, `editTicket`, `assignTicket`, `changeTicketStatus`, `addComment` |
+| Rules | The same services and Zod schemas as REST, so the same permissions, workflow, history and notifications |
+| Performance | Per-request DataLoaders: a constant number of queries however many tickets |
+| Safety | Error codes kept, unexpected errors hidden, email shown only to self and managers, size/depth/alias limits |
+| Tests | 23 |
 
 ---
 
@@ -2845,3 +2880,6 @@ Protecting the endpoint from overly expensive queries (depth and size limits).
 | **N+1 problem** | Running one query for a list plus one more per item, so the query count grows with the list |
 | **DataLoader** | A utility that collects lookups made during one request and fetches them in a single batched query |
 | **Field-level authorization** | Deciding per field (not per endpoint) whether the viewer may see it |
+| **Alias (GraphQL)** | A different name for a field in a query, letting the same field appear several times |
+| **Introspection** | A GraphQL query that asks the schema to describe itself (used by explorers for autocomplete) |
+| **Fragment (GraphQL)** | A reusable piece of a query, included with `...Name` |
