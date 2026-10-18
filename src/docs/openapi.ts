@@ -146,6 +146,19 @@ export const openApiDocument = {
           createdAt: timestamp,
         },
       },
+      Attachment: {
+        type: "object",
+        properties: {
+          id: uuid,
+          ticketId: uuid,
+          uploadedBy: uuid,
+          fileName: { type: "string" },
+          contentType: { type: "string", enum: ["image/jpeg", "image/png", "image/webp"] },
+          sizeBytes: { type: "integer" },
+          createdAt: timestamp,
+          url: { type: "string", format: "uri", description: "Download link, valid for 5 minutes" },
+        },
+      },
       Comment: {
         type: "object",
         properties: {
@@ -528,6 +541,45 @@ export const openApiDocument = {
         parameters: [ticketIdParam],
         requestBody: { required: true, content: json(fromZod(addCommentBody)) },
         responses: { "201": { description: "Created", content: dataOf(ref("Comment")) }, ...ticketErrors },
+      },
+    },
+    "/api/tickets/{id}/attachments": {
+      get: {
+        tags: ["Tickets"],
+        operationId: "listAttachments",
+        summary: "A ticket's photos, each with a download link valid for 5 minutes",
+        parameters: [ticketIdParam],
+        responses: {
+          "200": { description: "OK", content: dataOf({ type: "array", items: ref("Attachment") }) },
+          ...ticketErrors,
+        },
+      },
+      post: {
+        tags: ["Tickets"],
+        operationId: "uploadAttachment",
+        summary: "Attach a photo (JPEG, PNG or WebP, at most 5 MB; up to 10 per ticket)",
+        description: "The file type is checked from the file's contents, not its name.",
+        parameters: [ticketIdParam],
+        requestBody: {
+          required: true,
+          content: {
+            "multipart/form-data": {
+              schema: {
+                type: "object",
+                required: ["photo"],
+                properties: { photo: { type: "string", format: "binary" } },
+              },
+            },
+          },
+        },
+        responses: {
+          "201": { description: "Stored", content: dataOf(ref("Attachment")) },
+          ...ticketErrors,
+          "409": errorResponse("The ticket already has 10 photos"),
+          "413": errorResponse("Larger than 5 MB"),
+          "415": errorResponse("Not a JPEG, PNG or WebP image"),
+          "503": errorResponse("File storage isn't configured on the server"),
+        },
       },
     },
     "/api/tickets/{id}/assign": {

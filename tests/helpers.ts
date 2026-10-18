@@ -31,7 +31,7 @@ export async function resetDatabase() {
   }
   // Empty the (test) job queue too, so each test sees only its own jobs.
   await notificationsQueue().obliterate({ force: true });
-  await adminDb.execute(sql`TRUNCATE notifications, sessions, ticket_comments, ticket_events, tickets, properties, users, organizations CASCADE`);
+  await adminDb.execute(sql`TRUNCATE ticket_attachments, notifications, sessions, ticket_comments, ticket_events, tickets, properties, users, organizations CASCADE`);
 }
 
 // Creates a user and logs them in, so tests can send `.auth(user.token, { type: "bearer" })`.

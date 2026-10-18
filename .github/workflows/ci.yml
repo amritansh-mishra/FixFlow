@@ -54,6 +54,16 @@ jobs:
 
       - run: npm ci
 
+      # SeaweedFS (local S3) needs a start command, which `services:` can't
+      # pass, so it's started here, with the same keys file as local dev.
+      - name: Start SeaweedFS (S3-compatible file storage)
+        run: |
+          docker run -d --name seaweedfs -p 8333:8333 \
+            -v "$PWD/docker/seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro" \
+            chrislusf/seaweedfs:4.48 server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8333/healthz && exit 0; sleep 1; done
+          docker logs seaweedfs; exit 1
+
       # Migration 0004 grants permissions to this role; here we also let it log in.
       - name: Create the restricted app role
         run: psql "$DATABASE_ADMIN_URL" -c "CREATE ROLE fixflow_app LOGIN PASSWORD 'ci-app-password'"

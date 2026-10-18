@@ -38,7 +38,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 32. [Redis, BullMQ and in-app notifications](#32-redis-bullmq-and-in-app-notifications)
 33. [Email notifications, and three bugs the live checks found](#33-email-notifications-and-three-bugs-the-live-checks-found)
 34. [Decision: Cloudflare R2 for file storage](#34-decision-cloudflare-r2-for-file-storage)
-35. [Glossary](#glossary)
+35. [Photo attachments: secure uploads and signed links](#35-photo-attachments-secure-uploads-and-signed-links)
+36. [Glossary](#glossary)
 
 ---
 
@@ -2374,6 +2375,83 @@ new S3Client({
 
 ---
 
+## 35. Photo attachments: secure uploads and signed links
+
+```
+POST /api/tickets/:id/attachments   (form field "photo")  → stored, 201 with a download link
+GET  /api/tickets/:id/attachments                         → photos, each with a 5-minute link
+```
+
+### Where things live
+
+- **The photo** → object storage (SeaweedFS locally, Cloudflare R2 in production; see chapter 34).
+- **A record of it** → the `ticket_attachments` table: which ticket, who uploaded it, the storage key, the type and size. As usual: composite foreign keys keep it inside one organization, `CHECK` rules allow only image types and at most 5 MB, and the app's database user may **add and read** records but never change or delete them (permission tests prove it).
+
+### The upload, step by step (and why each step)
+
+**1. Check you can see the ticket *before* reading the upload.** Otherwise anyone could push 5 MB at a ticket they're not allowed to see. Hidden tickets return 404, the same as everywhere else.
+
+**2. Read at most 5 MB.** Uploads arrive as **multipart form data** (the standard format for files in forms). **multer** reads them and **cuts the upload off** as soon as it passes 5 MB, returning `413 Payload Too Large`. Without a limit, one huge upload could exhaust the server's memory.
+
+**3. Check what the file *really* is, from its first bytes.** The file name (`photo.jpg`) and the type the browser sends (`image/jpeg`) are **chosen by the client**, so they're trivially faked. Every file format starts with a recognizable signature, its **"magic number"**:
+
+| Format | First bytes |
+|---|---|
+| JPEG | `FF D8 FF` |
+| PNG | `89 50 4E 47 0D 0A 1A 0A` (`.PNG….`) |
+| WebP | `RIFF` … `WEBP` |
+
+`detectImageType()` reads those bytes. Anything else gets **`415 Unsupported Media Type`**: a script renamed `cute.jpg`, an HTML page, a PDF. The *detected* type is what's stored and served, never the client's claim.
+
+**Why it matters:** if storage served an uploaded HTML file as a web page, an attacker could run scripts in a victim's browser (stored XSS). Accepting only verified images closes that door.
+
+**4. Store it under a key the server chooses.**
+```
+orgs/<organization id>/tickets/<ticket id>/<random UUID>.png
+```
+The uploaded file name **never** becomes part of the path, so names like `../../../etc/passwd.png` (**path traversal**: trying to escape into other folders) can't do anything. The original name is kept, cleaned of folders and odd characters, **for display only**.
+
+**5. Record it** in the database, and return it with a download link.
+
+**Limits:** at most **10 photos per ticket** (`409` after that), so one ticket can't fill the storage.
+
+### Viewing: short-lived signed links
+
+Photos aren't public. Each one in the list comes with a **pre-signed URL**:
+
+```
+http://127.0.0.1:8333/fixflow/orgs/…/<uuid>.png?X-Amz-Expires=300&X-Amz-Signature=…
+```
+
+- The server **signs** the link with its secret key, and storage checks the signature. Change anything in the link (for example, the file name) and storage refuses it with `403`. A test checks exactly that.
+- It **expires after 5 minutes** (`X-Amz-Expires=300`), so a link copied from the browser can't be passed around indefinitely.
+- The browser downloads **straight from storage**. The API doesn't stream photo bytes, which keeps it light. With R2, those downloads are also free (chapter 34).
+
+### Settings
+
+```
+S3_ENDPOINT          http://127.0.0.1:8333 locally · https://<account-id>.r2.cloudflarestorage.com in production
+S3_REGION            auto
+S3_BUCKET            fixflow
+S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY   local dev keys by default; an R2 API token in production
+```
+
+In development the bucket is **created automatically** at startup. In production it's created once in the Cloudflare dashboard, so the app's key doesn't need permission to create buckets (least privilege again). If storage isn't configured in production, uploads return **`503`** instead of crashing.
+
+### Testing
+
+- Tests use their **own bucket**, `fixflow-test`, created and emptied before each run (like the test database).
+- 22 new tests (286 total): every image type accepted; non-images rejected even when disguised; over 5 MB → 413; no file → 400; **downloads byte-for-byte identical**; links expire in 300 s and **tampered links are refused**; the 10-photo limit; hidden tickets → 404 with nothing stored; uploaded names never in the storage path.
+- **Breaking it on purpose:** trusting the browser's claimed type, using the uploaded name in the path, and skipping the visibility check on upload were each caught.
+- **CI:** GitHub's `services:` can't pass SeaweedFS its start command, so CI starts it with `docker run` as a normal step, using the same keys file as local development, and waits for `/healthz`.
+- **Live check:** a photo uploaded through the running API came back through its signed link byte-for-byte identical.
+
+### Not yet
+
+Deleting photos, thumbnails (smaller previews), and the frontend upload button, which is the next step.
+
+---
+
 ## Glossary
 
 | Term | Simple meaning |
@@ -2520,3 +2598,8 @@ new S3Client({
 | **Egress fees** | Charges for data downloaded out of a cloud service |
 | **Cloudflare R2** | Cloudflare's S3-compatible object storage, with no egress fees |
 | **Vendor lock-in** | Being tied to one provider because switching would need major changes |
+| **Multipart form data** | The standard format browsers use to send files in forms |
+| **Magic number** | The signature bytes at the start of a file that identify its real format |
+| **Path traversal** | An attack using names like `../../` to reach files outside the intended folder |
+| **Pre-signed URL** | A link signed by the server that grants temporary access to one file, then expires |
+| **415 Unsupported Media Type** | HTTP status for "this kind of file isn't accepted" |

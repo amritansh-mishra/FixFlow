@@ -14,6 +14,8 @@ export default defineConfig({
       REDIS_URL: process.env.TEST_REDIS_URL ?? "redis://localhost:6379/1",
       // Emails go to Mailpit (Docker Compose locally, a service in CI).
       SMTP_URL: "smtp://127.0.0.1:1025",
+      // Uploaded test files go to their own bucket, emptied before each run.
+      S3_BUCKET: "fixflow-test",
     },
     // Password hashing (scrypt) is deliberately slow (~180 ms per hash), so the
     // rate-limiting tests that log in 20+ times take several seconds. The

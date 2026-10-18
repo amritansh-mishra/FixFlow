@@ -1,6 +1,7 @@
 import { createApp } from "./app.js";
 import { env } from "./config/env.js";
 import { pool } from "./db/index.js";
+import { ensureBucket } from "./lib/storage.js";
 
 const app = createApp();
 
@@ -11,6 +12,11 @@ const server = app.listen(env.port, async () => {
     console.log("Connected to PostgreSQL");
   } catch (err) {
     console.error("PostgreSQL connection error on startup:", err);
+  }
+  // Locally, create the storage bucket if it's missing. (In production the
+  // R2 bucket is created once in the Cloudflare dashboard.)
+  if (env.nodeEnv !== "production") {
+    await ensureBucket().catch((err) => console.warn("File storage not reachable yet:", err.message));
   }
 });
 

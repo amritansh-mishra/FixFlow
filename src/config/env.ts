@@ -69,6 +69,17 @@ export const env = Object.freeze({
   emailFrom: process.env.EMAIL_FROM?.trim() || "FixFlow <no-reply@fixflow.local>",
   // The frontend's address, for links in emails.
   appUrl: (process.env.APP_URL?.trim() || "http://localhost:5173").replace(/\/$/, ""),
+  // File storage (S3 API): Cloudflare R2 in production, SeaweedFS locally.
+  // In development everything defaults to the Docker Compose SeaweedFS; in
+  // production all of these must be set or uploads are refused (503).
+  s3: {
+    endpoint: process.env.S3_ENDPOINT?.trim() || (nodeEnv === "production" ? undefined : "http://127.0.0.1:8333"),
+    region: process.env.S3_REGION?.trim() || "auto",
+    bucket: process.env.S3_BUCKET?.trim() || "fixflow",
+    accessKeyId: process.env.S3_ACCESS_KEY_ID?.trim() || (nodeEnv === "production" ? undefined : "fixflow-dev"),
+    secretAccessKey:
+      process.env.S3_SECRET_ACCESS_KEY?.trim() || (nodeEnv === "production" ? undefined : "fixflow-dev-secret"),
+  },
 });
 
 export const isProduction = env.nodeEnv === "production";

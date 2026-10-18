@@ -5,6 +5,7 @@ import { cors } from "./middleware/cors.js";
 import { openApiDocument } from "./docs/openapi.js";
 import { pool } from "./db/index.js";
 import { errorHandler, notFoundHandler } from "./middleware/errors.js";
+import { attachmentsRouter } from "./modules/attachments/attachments.routes.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
 import { notificationsRouter } from "./modules/notifications/notifications.routes.js";
 import { organizationRouter } from "./modules/organization/organization.routes.js";
@@ -58,6 +59,7 @@ export function createApp() {
   app.use("/api/organization", organizationRouter);
   app.use("/api/properties", propertiesRouter);
   app.use("/api/stats", statsRouter);
+  app.use("/api/tickets/:id/attachments", attachmentsRouter);
   app.use("/api/tickets", ticketsRouter);
   app.use("/api/users", usersRouter);
 

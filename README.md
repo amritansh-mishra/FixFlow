@@ -18,6 +18,7 @@ A resident reports a leaking tap, a manager assigns a technician, the technician
 - **Workflow as a state machine:** `open → assigned → in_progress → resolved → closed` (with reopen), with the rules in one policy module.
 - **Audit history:** an append-only event log for every ticket, written in the same transaction as each change.
 - **Background jobs:** assignments, status changes and comments queue notification jobs (BullMQ on Redis); a separate worker process turns them into in-app notifications and emails, idempotently, with retries.
+- **Photo attachments:** uploads checked by their actual bytes (JPEG/PNG/WebP, ≤ 5 MB), stored in S3-compatible object storage (Cloudflare R2 in production, SeaweedFS locally), served through short-lived signed links.
 - **Concurrency-safe updates:** optimistic concurrency returns `409 CONFLICT` instead of losing a simultaneous change.
 - **Least-privilege database role:** the app's database user can't alter tables or rewrite history.
 - **Comments, search and pagination:** ticket discussions, text search with filters, and cursor pagination that stays exact down to the microsecond.
@@ -25,7 +26,7 @@ A resident reports a leaking tap, a manager assigns a technician, the technician
 - **Interactive API docs:** OpenAPI 3.1 generated from the same Zod schemas used for validation, with Swagger UI at `/docs`.
 - **196 automated tests** (Vitest + Supertest) against a real PostgreSQL database, including a deterministic race-condition test. They run in **GitHub Actions CI** on every push.
 
-**Tech stack:** TypeScript, Node.js 24, Express 5, PostgreSQL, Redis + BullMQ, Drizzle ORM, Zod, Vitest, Docker Compose, OpenAPI/Swagger, GitHub Actions · React 19 + Vite frontend · deployed on Render.
+**Tech stack:** TypeScript, Node.js 24, Express 5, PostgreSQL, Redis + BullMQ, S3 API (Cloudflare R2), Drizzle ORM, Zod, Vitest, Docker Compose, OpenAPI/Swagger, GitHub Actions · React 19 + Vite frontend · deployed on Render.
 
 **Frontend** (`frontend/`): sign up or join with a code, log in, browse and search tickets, report problems, assign technicians, move tickets through the workflow with role-aware buttons, comment, see each ticket's history, a manager dashboard, and a Team page (people, join code, properties).
 
@@ -72,7 +73,7 @@ curl $API/api/tickets -H "Authorization: Bearer <token>"
 Requires Node 24 (`nvm use`) and Docker. No local PostgreSQL install is needed.
 
 ```bash
-docker compose up -d      # PostgreSQL (5433), Redis (6379) and Mailpit (email inbox at http://localhost:8025)
+docker compose up -d      # PostgreSQL (5433), Redis (6379), Mailpit (inbox: http://localhost:8025), SeaweedFS (S3: 8333)
 cp .env.example .env      # defaults already point at the Docker database
 npm install
 npm run db:migrate        # create the tables (add -- --status to preview)
@@ -148,6 +149,8 @@ npm run user:set-password -- --org <organization-slug> --email <email>
 | `GET` | `/api/tickets/:id/history` | Everything that happened to the ticket, oldest first |
 | `GET` | `/api/tickets/:id/comments` | The ticket's comments, with author name and role |
 | `POST` | `/api/tickets/:id/comments` | Add a comment: `{ body }` |
+| `GET` | `/api/tickets/:id/attachments` | The ticket's photos, each with a download link valid for 5 minutes |
+| `POST` | `/api/tickets/:id/attachments` | Upload a photo (form field `photo`; JPEG/PNG/WebP, ≤ 5 MB, ≤ 10 per ticket) |
 
 ### Ticket workflow
 
