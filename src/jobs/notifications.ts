@@ -15,8 +15,9 @@ const STATUS_LABELS: Record<TicketStatus, string> = {
   closed: "Closed",
 };
 
-// Returns how many notifications were created.
-export async function processNotificationJob(job: TicketNotificationJob, jobId: string): Promise<number> {
+// Returns the IDs of the notifications it created (none if they already
+// existed from an earlier attempt of the same job).
+export async function processNotificationJob(job: TicketNotificationJob): Promise<string[]> {
   const [ticket] = await db
     .select({ title: tickets.title, createdBy: tickets.createdBy, assignedTo: tickets.assignedTo })
     .from(tickets)
@@ -25,8 +26,16 @@ export async function processNotificationJob(job: TicketNotificationJob, jobId: 
     .select({ name: users.name })
     .from(users)
     .where(and(eq(users.id, job.actorId), eq(users.organizationId, job.organizationId)));
-  // The ticket or person no longer exists: nothing sensible to say.
-  if (!ticket || !actor) return 0;
+  // The ticket or person doesn't exist. Normally impossible (jobs are queued
+  // after the change is saved), so say so loudly: it usually means this
+  // worker is connected to a different database than the API that queued it.
+  if (!ticket || !actor) {
+    console.warn(
+      `[worker] ${job.kind}: ${!ticket ? `ticket ${job.ticketId}` : `user ${job.actorId}`} not found ` +
+        `in organization ${job.organizationId}; skipping. Is this worker using the same database as the API?`,
+    );
+    return [];
+  }
 
   let type: NotificationType;
   let message: string;
@@ -52,7 +61,7 @@ export async function processNotificationJob(job: TicketNotificationJob, jobId: 
 
   // Never notify people about their own actions, and only once each.
   const userIds = [...new Set(recipients)].filter((id): id is string => !!id && id !== job.actorId);
-  if (userIds.length === 0) return 0;
+  if (userIds.length === 0) return [];
 
   const inserted = await db
     .insert(notifications)
@@ -64,12 +73,12 @@ export async function processNotificationJob(job: TicketNotificationJob, jobId: 
         ticketId: job.ticketId,
         type,
         message,
-        // Same job + same person = same key. If BullMQ retries this job, the
+        // Same event + same person = same key. If BullMQ retries this job, the
         // rows already saved are skipped instead of duplicated (idempotency).
-        dedupeKey: `${jobId}:${userId}`,
+        dedupeKey: `${job.eventId}:${userId}`,
       })),
     )
     .onConflictDoNothing({ target: notifications.dedupeKey })
     .returning({ id: notifications.id });
-  return inserted.length;
+  return inserted.map((row) => row.id);
 }

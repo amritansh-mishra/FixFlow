@@ -7,7 +7,7 @@ import { createApp } from "../src/app.js";
 import { notifications } from "../src/db/schema.js";
 import { processNotificationJob } from "../src/jobs/notifications.js";
 import { notificationsQueue, type TicketNotificationJob } from "../src/jobs/queue.js";
-import { adminDb, closeDatabases, createOrg, createTicket, resetDatabase } from "./helpers.js";
+import { adminDb, closeDatabases, createOrg, createTicket, resetDatabase, runQueuedJobs } from "./helpers.js";
 
 const app = createApp();
 
@@ -15,15 +15,6 @@ beforeEach(resetDatabase);
 afterAll(closeDatabases);
 
 type AsUser = { token: string };
-
-// Runs every waiting job, like the worker process would.
-async function runQueuedJobs() {
-  const jobs = await notificationsQueue().getJobs(["waiting"]);
-  for (const job of jobs) {
-    if (job.data.kind !== "test") await processNotificationJob(job.data, job.id!);
-  }
-  return jobs;
-}
 
 const inbox = (asUser: AsUser) => request(app).get("/api/notifications").auth(asUser.token, { type: "bearer" });
 const messages = async (asUser: AsUser) =>
@@ -121,10 +112,32 @@ describe("processing jobs into notifications", () => {
     expect(await messages(a.manager)).toEqual([]);
   });
 
+  // Regression test: duplicate protection used BullMQ's job number, which is
+  // only a counter per queue. After a Redis reset the numbers repeat, and new
+  // notifications were silently dropped as "duplicates".
+  it("still notifies after Redis is reset and job numbers start again", async () => {
+    const a = await createOrg("a");
+    const ticket = await createTicket(a, { title: "Leak", status: "assigned", assignedTo: a.technician.id });
+    const comment = (body: string) =>
+      request(app).post(`/api/tickets/${ticket.id}/comments`).auth(a.manager.token, { type: "bearer" }).send({ body });
+
+    await comment("first");
+    const [firstJob] = await notificationsQueue().getJobs(["waiting"]);
+    await runQueuedJobs();
+    await notificationsQueue().obliterate({ force: true }); // like a Redis reset: numbering restarts
+    await comment("second");
+    const [secondJob] = await notificationsQueue().getJobs(["waiting"]);
+    await runQueuedJobs();
+
+    expect(secondJob!.id).toBe(firstJob!.id); // the job numbers really did repeat
+    expect(await messages(a.technician)).toHaveLength(2);
+  });
+
   it("is idempotent: processing the same job twice creates no duplicates", async () => {
     const a = await createOrg("a");
     const ticket = await createTicket(a, { status: "assigned", assignedTo: a.technician.id });
     const job: TicketNotificationJob = {
+      eventId: "11111111-1111-1111-1111-111111111111",
       kind: "comment_added",
       organizationId: a.org.id,
       ticketId: ticket.id,
@@ -132,11 +145,11 @@ describe("processing jobs into notifications", () => {
       commentId: "00000000-0000-0000-0000-000000000000",
     };
 
-    const first = await processNotificationJob(job, "job-42");
-    const retry = await processNotificationJob(job, "job-42"); // e.g. BullMQ retrying after a crash
+    const first = await processNotificationJob(job);
+    const retry = await processNotificationJob(job); // e.g. BullMQ retrying after a crash
 
-    expect(first).toBe(2);
-    expect(retry).toBe(0);
+    expect(first).toHaveLength(2);
+    expect(retry).toEqual([]);
     expect(await adminDb.select().from(notifications)).toHaveLength(2);
   });
 });

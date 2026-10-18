@@ -32,6 +32,10 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      # Mailpit catches the emails the tests send (SMTP 1025, API 8025).
+      mailpit:
+        image: axllent/mailpit:v1.31.4
+        ports: ["1025:1025", "8025:8025"]
 
     # Same two connections as local development: the owner (for test setup and
     # migrations) and the restricted app role (what the app under test uses).

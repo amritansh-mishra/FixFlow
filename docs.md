@@ -36,7 +36,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 30. [Signup, join codes and the Team page](#30-signup-join-codes-and-the-team-page)
 31. [Docker Compose for local development](#31-docker-compose-for-local-development)
 32. [Redis, BullMQ and in-app notifications](#32-redis-bullmq-and-in-app-notifications)
-33. [Glossary](#glossary)
+33. [Email notifications, and three bugs the live checks found](#33-email-notifications-and-three-bugs-the-live-checks-found)
+34. [Glossary](#glossary)
 
 ---
 
@@ -2261,6 +2262,56 @@ Email notifications (Mailpit locally) as a second kind of job on the same queue.
 
 ---
 
+## 33. Email notifications, and three bugs the live checks found
+
+### Mailpit: a practice letterbox
+
+**Mailpit** is a pretend mail server for development. The app sends email to it over **SMTP** (the standard protocol for sending email) exactly as it would to a real provider. Mailpit **keeps every message** and shows it at **http://localhost:8025**, and nothing reaches a real inbox. It runs in Docker Compose (bound to `127.0.0.1`, like the others) and in CI, so the tests can check real delivered emails.
+
+### How an email gets sent
+
+```
+Ticket event → [notification job] → worker creates notification rows
+                                        └─ queues one [send_email job] per notification
+                                              → worker sends it via Nodemailer → Mailpit
+```
+
+- **Nodemailer** is the standard Node.js library for sending email over SMTP.
+- **Why a separate `send_email` job?** If the mail server is down, BullMQ retries **just the email**, without redoing the notification step. Each piece of work gets its own retries.
+- **No email queued twice:** the email job's ID is `email-<notification id>`, and BullMQ ignores a job whose ID already exists. Notification IDs are UUIDs, so they're unique everywhere.
+- **The email** has the notification text as its subject, a greeting, and a **link to the ticket** (`APP_URL/#/tickets/<id>`). The HTML version **escapes** the ticket title, so a title like `<b>Broken</b>` shows as text instead of being treated as HTML (a test checks this).
+- **No email provider? No crash.** If `SMTP_URL` isn't set in production, emails are **skipped** and the rest keeps working. Locally it defaults to Mailpit.
+
+**Settings:** `SMTP_URL` (default `smtp://127.0.0.1:1025`), `EMAIL_FROM`, `APP_URL`.
+
+`127.0.0.1`, not `localhost`: on this Mac, `localhost` resolves to IPv6 (`::1`) first, where Mailpit isn't listening, so the first send wasted ~270 ms failing over. `127.0.0.1` goes straight there.
+
+### Three bugs found by checking the real thing ⭐
+
+The unit and integration tests all passed. These were found by **running the actual programs** and looking closely at the results.
+
+**Bug 1: a flaky test.** One run had a single failure, "blocks an IP address after 20 attempts", and the next runs passed. **A test that sometimes fails is never "just bad luck".** Timing it showed **~4.4 s**, close to Vitest's **5 s limit per test**: each of its 21 logins deliberately spends ~180 ms hashing. On a busy machine it crossed the limit. The fix was `testTimeout: 15_000`, with a comment explaining **why** these tests are slow *by design*. CI machines are often slower than a laptop.
+
+**Bug 2: two workers on one queue, with different databases.** In a live check, the API accepted a comment, but the new worker logged nothing and no email arrived. An **older worker** (left running for UI testing, connected to a *different* database) shared the same Redis queue and **took the job first**. It couldn't find that ticket in *its* database and **silently** created nothing.
+- **Lesson:** workers sharing a queue must share the same database. Separate environments need separate queues (a different Redis database or server).
+- **Fix:** "ticket not found" now logs a **loud warning** ("Is this worker using the same database as the API?"), instead of looking exactly like "nobody to notify".
+
+**Bug 3: duplicate protection that silently dropped real notifications** (the important one). A comment should have notified two people, but only one got it. The duplicate-protection key was **`<BullMQ job number>:<recipient>`**, but **BullMQ job numbers are only a counter per queue.** The demo used a fresh Redis database, so numbering restarted at 1. The technician already had a notification with key `1:<technician>` from an earlier job, so the new one was **wrongly treated as a duplicate and dropped**.
+- **In real life:** every time Redis was reset, moved or flushed, notifications would start disappearing, **with no error at all**.
+- **Fix:** each event gets its own **UUID** (`eventId`) when the API queues it, and the key is `<eventId>:<recipient>`. A **retry** of the same job carries the same UUID, so idempotency still works. A **new** event always gets a new UUID, so it can never collide.
+- **Regression test:** reset the queue so job numbers repeat (the test asserts they really did), then check the next event still notifies. It **fails with the old key** and passes with the new one.
+
+**The lesson running through all three:** passing tests are necessary but not sufficient. Run the real system, read the output carefully, and when a number is off (1 notification instead of 2, 0 emails instead of 2, 5.4 s instead of 0.2 s), **find out why** instead of moving on.
+
+### Testing
+
+- 7 new tests (264 total): emails arrive in Mailpit with the right recipient, subject and link; a comment emails everyone notified; HTML is escaped; the same email can't be queued twice; missing notification → skipped; no SMTP → skipped; plus the regression test.
+- **Break it on purpose:** removing HTML escaping, removing the email job ID, and not queueing emails were each caught.
+- **Live check:** API + worker + Mailpit on the Docker database. A comment produced **2 notifications and 2 emails**, visible in Mailpit's inbox.
+- CI now runs **PostgreSQL, Redis and Mailpit** services.
+
+---
+
 ## Glossary
 
 | Term | Simple meaning |
@@ -2395,3 +2446,9 @@ Email notifications (Mailpit locally) as a second kind of job on the same queue.
 | **Outbox pattern** | Saving outgoing messages in the database in the same transaction, then delivering them separately, so none are lost |
 | **Polling** | Asking the server for updates at regular intervals |
 | **WebSockets / Server-Sent Events** | Connections that let the server push updates to the browser instantly |
+| **SMTP** | The standard protocol for sending email between servers |
+| **Mailpit** | A pretend mail server for development that catches every email and shows it on a web page |
+| **Nodemailer** | The standard Node.js library for sending email |
+| **Flaky test** | A test that sometimes passes and sometimes fails without any code change; always worth investigating |
+| **Regression test** | A test that reproduces a fixed bug, so it can't silently come back |
+| **UUID** | A randomly generated ID that's unique everywhere, e.g. `6fea0bc4-561d-4bf1-…` |

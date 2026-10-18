@@ -4,6 +4,7 @@ import pg from "pg";
 import { pool } from "../src/db/index.js";
 import * as schema from "../src/db/schema.js";
 import { organizations, properties, tickets, users, type NewTicket, type UserRole } from "../src/db/schema.js";
+import { handleJob } from "../src/jobs/handler.js";
 import { closeQueue, notificationsQueue } from "../src/jobs/queue.js";
 import { createSession } from "../src/modules/auth/auth.service.js";
 import { TEST_DB_NAME, testDatabaseUrl } from "./test-db.js";
@@ -78,4 +79,20 @@ export async function createTicket(org: Org, overrides: Partial<NewTicket> = {})
     })
     .returning();
   return ticket!;
+}
+
+// Runs every waiting job the way the worker would, including jobs that those
+// jobs queue (a ticket event queues its emails). Returns the kinds it ran.
+export async function runQueuedJobs(): Promise<string[]> {
+  const ran: string[] = [];
+  for (let round = 0; round < 10; round++) {
+    const jobs = await notificationsQueue().getJobs(["waiting"]);
+    if (jobs.length === 0) break;
+    for (const job of jobs) {
+      await handleJob(job);
+      ran.push(job.data.kind);
+      await job.remove();
+    }
+  }
+  return ran;
 }

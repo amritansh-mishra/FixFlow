@@ -17,7 +17,7 @@ A resident reports a leaking tap, a manager assigns a technician, the technician
 - **Role-based access:** residents, technicians, managers and admins each see and do only what their role allows. Hidden tickets return `404`.
 - **Workflow as a state machine:** `open → assigned → in_progress → resolved → closed` (with reopen), with the rules in one policy module.
 - **Audit history:** an append-only event log for every ticket, written in the same transaction as each change.
-- **Background jobs:** assignments, status changes and comments queue notification jobs (BullMQ on Redis); a separate worker process turns them into in-app notifications, idempotently, with retries.
+- **Background jobs:** assignments, status changes and comments queue notification jobs (BullMQ on Redis); a separate worker process turns them into in-app notifications and emails, idempotently, with retries.
 - **Concurrency-safe updates:** optimistic concurrency returns `409 CONFLICT` instead of losing a simultaneous change.
 - **Least-privilege database role:** the app's database user can't alter tables or rewrite history.
 - **Comments, search and pagination:** ticket discussions, text search with filters, and cursor pagination that stays exact down to the microsecond.
@@ -72,12 +72,12 @@ curl $API/api/tickets -H "Authorization: Bearer <token>"
 Requires Node 24 (`nvm use`) and Docker. No local PostgreSQL install is needed.
 
 ```bash
-docker compose up -d      # PostgreSQL 18 on localhost:5433 and Redis on localhost:6379
+docker compose up -d      # PostgreSQL (5433), Redis (6379) and Mailpit (email inbox at http://localhost:8025)
 cp .env.example .env      # defaults already point at the Docker database
 npm install
 npm run db:migrate        # create the tables (add -- --status to preview)
 npm run dev               # start the API with auto-reload on http://localhost:3000
-npm run worker            # in a second terminal: the background worker (notifications)
+npm run worker            # in a second terminal: the background worker (notifications and emails)
 npm test                  # run the tests (in a separate fixflow_test database)
 ```
 

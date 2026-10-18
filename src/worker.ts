@@ -9,16 +9,11 @@
 
 import { Worker, type Job } from "bullmq";
 import { pool } from "./db/index.js";
-import { processNotificationJob } from "./jobs/notifications.js";
-import { NOTIFICATIONS_QUEUE, redisConnection, type NotificationJob } from "./jobs/queue.js";
+import { handleJob } from "./jobs/handler.js";
+import { closeQueue, NOTIFICATIONS_QUEUE, redisConnection, type NotificationJob } from "./jobs/queue.js";
 
 async function handle(job: Job<NotificationJob>) {
-  if (job.data.kind === "test") {
-    console.log(`[worker] test job ${job.id}: ${job.data.message}`);
-    return;
-  }
-  const created = await processNotificationJob(job.data, job.id!);
-  console.log(`[worker] ${job.data.kind} for ticket ${job.data.ticketId}: ${created} notification(s)`);
+  console.log(`[worker] ${await handleJob(job)}`);
 }
 
 const worker = new Worker<NotificationJob>(NOTIFICATIONS_QUEUE, handle, {
@@ -37,6 +32,7 @@ worker.on("failed", (job, err) =>
 async function shutdown(signal: string) {
   console.log(`[worker] ${signal} received, finishing current jobs`);
   await worker.close();
+  await closeQueue();
   await pool.end();
   process.exit(0);
 }

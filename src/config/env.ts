@@ -53,14 +53,22 @@ function parseOrigins(raw: string | undefined): string[] {
     .filter(Boolean);
 }
 
+const nodeEnv = parseNodeEnv(process.env.NODE_ENV);
+
 export const env = Object.freeze({
-  nodeEnv: parseNodeEnv(process.env.NODE_ENV),
+  nodeEnv,
   port: parsePort(process.env.PORT),
   databaseUrl: parseDatabaseUrl(required("DATABASE_URL")),
   // Browser origins allowed to call the API (the frontend), comma-separated.
   corsOrigins: parseOrigins(process.env.CORS_ORIGINS),
   // Redis for background job queues (BullMQ). Defaults to the Docker Compose one.
   redisUrl: process.env.REDIS_URL?.trim() || "redis://localhost:6379",
+  // Where email is sent from. In development it defaults to Mailpit (Docker
+  // Compose). In production, emails are skipped unless SMTP_URL is set.
+  smtpUrl: process.env.SMTP_URL?.trim() || (nodeEnv === "production" ? undefined : "smtp://127.0.0.1:1025"),
+  emailFrom: process.env.EMAIL_FROM?.trim() || "FixFlow <no-reply@fixflow.local>",
+  // The frontend's address, for links in emails.
+  appUrl: (process.env.APP_URL?.trim() || "http://localhost:5173").replace(/\/$/, ""),
 });
 
 export const isProduction = env.nodeEnv === "production";
