@@ -7,6 +7,7 @@ import {
   assignTicketHandler,
   changeStatusHandler,
   createTicketHandler,
+  editTicketHandler,
   getTicketHandler,
   listCommentsHandler,
   listTicketsHandler,
@@ -20,6 +21,7 @@ ticketsRouter.use(requireUser);
 ticketsRouter.get("/", listTicketsHandler);
 ticketsRouter.post("/", createTicketHandler);
 ticketsRouter.get("/:id", getTicketHandler);
+ticketsRouter.patch("/:id", editTicketHandler);
 ticketsRouter.get("/:id/history", ticketHistoryHandler);
 ticketsRouter.get("/:id/comments", listCommentsHandler);
 ticketsRouter.post("/:id/comments", addCommentHandler);

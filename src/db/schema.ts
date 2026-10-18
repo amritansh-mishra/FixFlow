@@ -22,7 +22,7 @@ export const USER_ROLES = ["resident", "technician", "manager", "admin"] as cons
 export const TICKET_PRIORITIES = ["low", "medium", "high", "urgent"] as const;
 export const TICKET_STATUSES = ["open", "assigned", "in_progress", "resolved", "closed"] as const;
 
-export const TICKET_EVENT_TYPES = ["created", "assigned", "status_changed", "commented"] as const;
+export const TICKET_EVENT_TYPES = ["created", "assigned", "status_changed", "commented", "edited"] as const;
 
 export type UserRole = (typeof USER_ROLES)[number];
 export type TicketPriority = (typeof TICKET_PRIORITIES)[number];
@@ -183,7 +183,7 @@ export const ticketEvents = pgTable(
     }),
     check(
       "ticket_events_type_check",
-      sql`${t.type} IN ('created', 'assigned', 'status_changed', 'commented')`,
+      sql`${t.type} IN ('created', 'assigned', 'status_changed', 'commented', 'edited')`,
     ),
     check(
       "ticket_events_from_status_check",

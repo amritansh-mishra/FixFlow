@@ -46,6 +46,7 @@ describe.skipIf(!usingRestrictedAppRole())("the app's database role", () => {
     ["change a user's role", sql`UPDATE users SET role = 'admin'`],
     ["delete a ticket", sql`DELETE FROM tickets`],
     ["change a ticket's organization", sql`UPDATE tickets SET organization_id = organization_id`],
+    ["change who reported a ticket", sql`UPDATE tickets SET created_by = created_by`],
     ["rewrite history", sql`UPDATE ticket_events SET to_status = 'closed'`],
     ["delete history", sql`DELETE FROM ticket_events`],
     ["extend a session", sql`UPDATE sessions SET expires_at = now() + interval '1 year'`],

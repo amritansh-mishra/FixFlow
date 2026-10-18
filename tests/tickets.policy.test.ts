@@ -6,6 +6,7 @@ import type { AuthContext } from "../src/middleware/auth.js";
 import {
   canAssign,
   canCreateTicket,
+  canEditTicket,
   canViewTicket,
   findTransition,
   isAssignable,
@@ -121,5 +122,31 @@ describe("ticket visibility", () => {
 
   it("a technician can't see an unassigned ticket", () => {
     expect(canViewTicket(assignee, { createdBy: "creator", assignedTo: null })).toBe(false);
+  });
+});
+
+describe("canEditTicket", () => {
+  const at = (status: "open" | "assigned" | "in_progress" | "resolved" | "closed") => ({ ...ticket, status });
+
+  it.each(["open", "assigned"] as const)("the creator can edit while %s", (status) => {
+    expect(canEditTicket(creator, at(status))).toBe(true);
+  });
+
+  it.each(["in_progress", "resolved", "closed"] as const)("the creator can't once it's %s", (status) => {
+    expect(canEditTicket(creator, at(status))).toBe(false);
+  });
+
+  it.each(["open", "assigned", "in_progress", "resolved"] as const)("a manager can edit while %s", (status) => {
+    expect(canEditTicket(manager, at(status))).toBe(true);
+    expect(canEditTicket(admin, at(status))).toBe(true);
+  });
+
+  it("nobody can edit a closed ticket", () => {
+    for (const who of [creator, manager, admin, assignee]) expect(canEditTicket(who, at("closed"))).toBe(false);
+  });
+
+  it("technicians and other residents can't edit", () => {
+    expect(canEditTicket(assignee, at("assigned"))).toBe(false);
+    expect(canEditTicket(otherResident, at("open"))).toBe(false);
   });
 });

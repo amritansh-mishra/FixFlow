@@ -143,6 +143,7 @@ npm run user:set-password -- --org <organization-slug> --email <email>
 | `POST` | `/api/properties` | Add a property (managers and admins) |
 | `GET` | `/api/stats` | Ticket statistics and technician workload (managers and admins) |
 | `GET` | `/api/tickets?status=&priority=&propertyId=&q=&limit=&cursor=` | List visible tickets, newest first. `q` searches title and description; pass `nextCursor` as `cursor` for the next page (`limit` 1–50, default 20) |
+| `PATCH` | `/api/tickets/:id` | Edit `{ title?, description?, priority? }`: reporter until work starts, managers until closed |
 | `GET` | `/api/tickets/:id` | One ticket (404 if it doesn't exist or belongs to another organization) |
 | `POST` | `/api/tickets` | Create a ticket: `{ propertyId, title, description?, priority? }` → 201 |
 | `PATCH` | `/api/tickets/:id/assign` | Assign to a technician: `{ technicianId }` (managers and admins) |
@@ -165,6 +166,7 @@ open ──assign──▶ assigned ──start──▶ in_progress ──resol
 | Change | Who |
 |---|---|
 | report a ticket | resident, manager, admin (not technicians) |
+| edit title / description / priority | the reporter while `open` or `assigned`; managers and admins until `closed` |
 | assign / reassign (`open` or `assigned`) | manager, admin |
 | `assigned → in_progress`, `in_progress → resolved` | the assigned technician |
 | `resolved → closed`, `resolved → in_progress` (reopen) | the ticket's creator, manager, admin |

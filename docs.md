@@ -40,7 +40,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 34. [Decision: Cloudflare R2 for file storage](#34-decision-cloudflare-r2-for-file-storage)
 35. [Photo attachments: secure uploads and signed links](#35-photo-attachments-secure-uploads-and-signed-links)
 36. [Polish: change password and deleting photos](#36-polish-change-password-and-deleting-photos)
-37. [Glossary](#glossary)
+37. [More polish: editing tickets, password reset, thumbnails](#37-more-polish-editing-tickets-password-reset-thumbnails)
+38. [Glossary](#glossary)
 
 ---
 
@@ -2494,6 +2495,29 @@ The "different" rule uses Zod's `.refine()`, a custom check that compares two fi
 ### Verified
 
 301 tests (13 new). Breaking it on purpose: logging out the current session too, not counting wrong current passwords, letting anyone delete any photo, and deleting the record but leaving the file were each caught. Both features were also exercised through the frontend's proxy.
+
+
+---
+
+## 37. More polish: editing tickets, password reset, thumbnails
+
+### 1. Editing a ticket: `PATCH /api/tickets/:id`
+
+Change any of `title`, `description`, `priority` (at least one).
+
+**The rule** (decided by you, in `canEditTicket()` in the policy file):
+
+| Who | Can edit while |
+|---|---|
+| The **reporter** | `open` or `assigned`, i.e. until a technician **starts work**, so the problem doesn't change under the technician's feet |
+| **Managers, admins** | Any status except `closed` |
+| Technicians, other residents | Never; they comment instead |
+
+- **Every edit is recorded** as an `edited` event in the history. Migration `0010` replaces the history table's allowed-types rule (drop and re-add, inside one transaction), and grants the restricted database user `UPDATE` on **only** `title`, `description` and `priority`. A new permission test confirms it still can't change who reported a ticket.
+- **Race protection:** the same "only if unchanged since I checked" update as status changes (chapter 23). If a technician starts work at the very moment the reporter saves an edit, the edit gets **409 CONFLICT** instead of slipping through.
+- **Frontend:** an **Edit** button next to the title, shown only to people allowed to edit. The form sends **only the fields that changed**.
+
+**A testing gotcha worth remembering:** the first race test took 5.9 s and got 403 instead of 409. A supertest request **doesn't start until something awaits it** (`.then()`), so the test waited 5 s for a request that wasn't running, released the lock, and only then sent it. By then the ticket really was "in progress", so 403 was the correct answer. The fix was `.then((r) => r)` to start it, plus a loud error if the request never reaches the lock. Passing 5 out of 5 times in ~0.2 s, and failing when the race protection is removed, shows the test now really tests the race.
 
 ---
 

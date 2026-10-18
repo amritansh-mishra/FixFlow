@@ -31,7 +31,7 @@ export interface Ticket {
 export interface TicketEvent {
   id: string;
   actorId: string;
-  type: "created" | "assigned" | "status_changed" | "commented";
+  type: "created" | "assigned" | "status_changed" | "commented" | "edited";
   fromStatus: Status | null;
   toStatus: Status | null;
   assignedTo: string | null;

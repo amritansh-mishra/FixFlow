@@ -15,8 +15,8 @@ import {
 import type { AuthContext } from "../../middleware/auth.js";
 import { enqueueNotification } from "../../jobs/queue.js";
 import { HttpError } from "../../middleware/errors.js";
-import { canAssign, canCreateTicket, findTransition, isAssignable, ticketScope } from "./tickets.policy.js";
-import type { CreateTicketBody, ListTicketsQuery } from "./tickets.schemas.js";
+import { canAssign, canCreateTicket, canEditTicket, findTransition, isAssignable, ticketScope } from "./tickets.policy.js";
+import type { CreateTicketBody, EditTicketBody, ListTicketsQuery } from "./tickets.schemas.js";
 
 // SQL condition for "tickets this user may see": their organization, narrowed
 // by role (see ticketScope in tickets.policy.ts). Every ticket query uses it.
@@ -309,4 +309,41 @@ export async function addComment(auth: AuthContext, ticketId: string, body: stri
     .innerJoin(users, eq(users.id, ticketComments.authorId))
     .where(eq(ticketComments.id, id));
   return comment!;
+}
+
+export async function editTicket(auth: AuthContext, ticketId: string, changes: EditTicketBody) {
+  const ticket = await getTicketOr404(auth, ticketId);
+  if (!canEditTicket(auth, ticket)) {
+    throw new HttpError(
+      403,
+      "FORBIDDEN",
+      ticket.status === "closed"
+        ? "Closed tickets can't be edited"
+        : "Only the reporter (before work starts) or a manager can edit this ticket",
+    );
+  }
+
+  const updated = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(tickets)
+      .set({
+        ...(changes.title !== undefined && { title: changes.title }),
+        ...(changes.description !== undefined && { description: changes.description || null }),
+        ...(changes.priority !== undefined && { priority: changes.priority }),
+      })
+      // Same race protection as status changes: if work started (or the
+      // ticket was reassigned) since the rule was checked, refuse.
+      .where(unchangedSince(ticket))
+      .returning();
+    if (!row) throw CONFLICT();
+
+    await tx.insert(ticketEvents).values({
+      organizationId: auth.organizationId,
+      ticketId: ticket.id,
+      actorId: auth.userId,
+      type: "edited",
+    });
+    return row;
+  });
+  return updated;
 }

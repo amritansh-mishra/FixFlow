@@ -57,6 +57,14 @@ export function canCreateTicket(auth: AuthContext): boolean {
   return auth.role !== "technician";
 }
 
+// Editing title, description and priority: the person who reported it, until
+// a technician starts work (so the problem doesn't change under their feet);
+// managers and admins until the ticket is closed. Technicians comment instead.
+export function canEditTicket(auth: AuthContext, ticket: TicketParties & Pick<Ticket, "status">): boolean {
+  if (isManager(auth)) return ticket.status !== "closed";
+  return ticket.createdBy === auth.userId && (ticket.status === "open" || ticket.status === "assigned");
+}
+
 export function canAssign(auth: AuthContext): boolean {
   return isManager(auth);
 }

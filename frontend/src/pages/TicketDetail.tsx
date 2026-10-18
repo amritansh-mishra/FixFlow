@@ -12,6 +12,7 @@ import {
   type User,
 } from "../api";
 import { isManager, useAuth } from "../auth";
+import { EditTicketForm, canEditTicket } from "../components/EditTicketForm";
 import { TicketPhotos } from "../components/TicketPhotos";
 import { ErrorBox, formatDate, PriorityBadge, Spinner, StatusBadge, statusLabel } from "../components/ui";
 
@@ -47,6 +48,7 @@ export function TicketDetailPage({ id }: { id: string }) {
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -124,8 +126,28 @@ export function TicketDetailPage({ id }: { id: string }) {
             <StatusBadge status={ticket.status} />
             <PriorityBadge priority={ticket.priority} />
           </div>
-          <h1>{ticket.title}</h1>
-          {ticket.description && <p className="description">{ticket.description}</p>}
+          {editing ? (
+            <EditTicketForm
+              ticket={ticket}
+              onCancel={() => setEditing(false)}
+              onSaved={async () => {
+                setEditing(false);
+                await load();
+              }}
+            />
+          ) : (
+            <>
+              <div className="title-row">
+                <h1>{ticket.title}</h1>
+                {canEditTicket(user, ticket) && (
+                  <button className="button small" onClick={() => setEditing(true)}>
+                    Edit
+                  </button>
+                )}
+              </div>
+              {ticket.description && <p className="description">{ticket.description}</p>}
+            </>
+          )}
           <dl className="facts">
             <dt>Location</dt>
             <dd>{property?.name ?? "…"}</dd>
@@ -201,6 +223,8 @@ function describeEvent(event: TicketEvent, nameOf: (id: string | null) => string
       return `${who} assigned it to ${nameOf(event.assignedTo)}`;
     case "commented":
       return `${who} commented`;
+    case "edited":
+      return `${who} edited the ticket`;
     case "status_changed":
       return `${who} moved it from ${statusLabel(event.fromStatus!)} to ${statusLabel(event.toStatus!)}`;
   }

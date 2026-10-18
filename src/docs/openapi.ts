@@ -13,6 +13,7 @@ import { addUserBody } from "../modules/users/users.routes.js";
 import {
   addCommentBody,
   assignTicketBody,
+  editTicketBody,
   changeStatusBody,
   createTicketBody,
   listTicketsQuery,
@@ -518,6 +519,20 @@ export const openApiDocument = {
       },
     },
     "/api/tickets/{id}": {
+      patch: {
+        tags: ["Tickets"],
+        operationId: "editTicket",
+        summary: "Edit title, description or priority",
+        description: "The reporter can edit until work starts; managers and admins until the ticket is closed.",
+        parameters: [ticketIdParam],
+        requestBody: { required: true, content: json(fromZod(editTicketBody)) },
+        responses: {
+          "200": { description: "Updated", content: dataOf(ref("Ticket")) },
+          ...ticketErrors,
+          "403": errorResponse("Not allowed to edit this ticket now"),
+          "409": errorResponse("Someone else changed the ticket at the same moment"),
+        },
+      },
       get: {
         tags: ["Tickets"],
         operationId: "getTicket",

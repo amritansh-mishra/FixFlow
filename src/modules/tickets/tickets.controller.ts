@@ -7,6 +7,7 @@ import { getAuth } from "../../middleware/auth.js";
 import { HttpError } from "../../middleware/errors.js";
 import {
   addCommentBody,
+  editTicketBody,
   assignTicketBody,
   changeStatusBody,
   createTicketBody,
@@ -15,6 +16,7 @@ import {
 } from "./tickets.schemas.js";
 import {
   addComment,
+  editTicket,
   assignTicket,
   changeTicketStatus,
   createTicket,
@@ -99,4 +101,14 @@ export const addCommentHandler: RequestHandler = async (req, res) => {
 
   const comment = await addComment(auth, id, body);
   res.status(201).json({ data: comment });
+};
+
+// PATCH /api/tickets/:id
+export const editTicketHandler: RequestHandler = async (req, res) => {
+  const auth = getAuth(req);
+  const { id } = validate(ticketIdParams, req.params, "ticket id");
+  const changes = validate(editTicketBody, req.body, "request body");
+
+  const ticket = await editTicket(auth, id, changes);
+  res.status(200).json({ data: ticket });
 };

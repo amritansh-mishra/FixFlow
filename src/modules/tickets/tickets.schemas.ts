@@ -50,3 +50,15 @@ export const changeStatusBody = z.strictObject({
 export const addCommentBody = z.strictObject({
   body: z.string().trim().min(1).max(2000),
 });
+
+// PATCH /api/tickets/:id: change any of these; at least one is required.
+export const editTicketBody = z
+  .strictObject({
+    title: z.string().trim().min(1).max(200).optional(),
+    // null (or an empty string) clears the description.
+    description: z.string().trim().max(5000).nullable().optional(),
+    priority: z.enum(TICKET_PRIORITIES).optional(),
+  })
+  .refine((body) => Object.keys(body).length > 0, { message: "Change at least one field" });
+
+export type EditTicketBody = z.infer<typeof editTicketBody>;

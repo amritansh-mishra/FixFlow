@@ -811,6 +811,25 @@ textarea:focus {
   background: #fecaca;
 }
 
+/* Editing a ticket */
+.title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+.title-row h1 {
+  margin: 0;
+}
+.edit-form {
+  margin-top: 0.75rem;
+}
+.edit-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
 /* Phones */
 @media (max-width: 760px) {
   .topbar {
