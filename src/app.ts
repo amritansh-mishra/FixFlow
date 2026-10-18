@@ -3,6 +3,7 @@ import { isProduction } from "./config/env.js";
 import { docsRouter } from "./docs/docs.routes.js";
 import { cors } from "./middleware/cors.js";
 import { openApiDocument } from "./docs/openapi.js";
+import { yoga } from "./graphql/server.js";
 import { pool } from "./db/index.js";
 import { errorHandler, notFoundHandler } from "./middleware/errors.js";
 import { attachmentsRouter } from "./modules/attachments/attachments.routes.js";
@@ -54,6 +55,8 @@ export function createApp() {
   });
 
   app.use(docsRouter);
+  // GraphQL: one endpoint, same login and the same rules as the REST API.
+  app.use(yoga.graphqlEndpoint, (req, res) => void yoga(req, res, { req, res }));
   app.use("/api/auth", authRouter);
   app.use("/api/notifications", notificationsRouter);
   app.use("/api/organization", organizationRouter);

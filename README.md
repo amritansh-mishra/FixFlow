@@ -26,7 +26,7 @@ A resident reports a leaking tap, a manager assigns a technician, the technician
 - **Interactive API docs:** OpenAPI 3.1 generated from the same Zod schemas used for validation, with Swagger UI at `/docs`.
 - **196 automated tests** (Vitest + Supertest) against a real PostgreSQL database, including a deterministic race-condition test. They run in **GitHub Actions CI** on every push.
 
-**Tech stack:** TypeScript, Node.js 24, Express 5, PostgreSQL, Redis + BullMQ, S3 API (Cloudflare R2), Drizzle ORM, Zod, Vitest, Docker Compose, OpenAPI/Swagger, GitHub Actions · React 19 + Vite frontend · deployed on Render.
+**Tech stack:** TypeScript, Node.js 24, Express 5, GraphQL (Yoga + Pothos), PostgreSQL, Redis + BullMQ, S3 API (Cloudflare R2), Drizzle ORM, Zod, Vitest, Docker Compose, OpenAPI/Swagger, GitHub Actions · React 19 + Vite frontend · deployed on Render.
 
 **Frontend** (`frontend/`): sign up or join with a code, log in, browse and search tickets, report problems, assign technicians, move tickets through the workflow with role-aware buttons, comment, see each ticket's history, a manager dashboard, and a Team page (people, join code, properties).
 
@@ -95,6 +95,14 @@ npm run dev               # http://localhost:5173. Vite forwards /api to the loc
 ```
 
 ## API
+
+### GraphQL
+
+`POST /graphql` accepts GraphQL queries with the same `Authorization: Bearer <token>` and the same rules as REST. In development, open http://localhost:3000/graphql in a browser for the interactive explorer.
+
+```graphql
+{ me { name role } tickets(status: open, first: 10) { nodes { id title priority } nextCursor } }
+```
 
 ### Authentication
 

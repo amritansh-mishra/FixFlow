@@ -41,7 +41,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 35. [Photo attachments: secure uploads and signed links](#35-photo-attachments-secure-uploads-and-signed-links)
 36. [Polish: change password and deleting photos](#36-polish-change-password-and-deleting-photos)
 37. [More polish: editing tickets, password reset, thumbnails](#37-more-polish-editing-tickets-password-reset-thumbnails)
-38. [Glossary](#glossary)
+38. [GraphQL](#38-graphql)
+39. [Glossary](#glossary)
 
 ---
 
@@ -2571,6 +2572,57 @@ POST /api/auth/reset-password   { token, newPassword }    → password set, ever
 
 **sharp, and npm's install-script blocking:** native libraries often need install scripts, which npm 11 blocks by default. sharp 0.35 ships **ready-made binaries** as optional packages (macOS arm64 for this laptop, Linux x64 for CI and Render), so it works without any script.
 
+
+---
+
+## 38. GraphQL
+
+### What it is, and why have it next to REST
+
+With REST, each URL returns a fixed shape. Showing one ticket page took **four requests**: the ticket, its comments, its photos, its history. **GraphQL** has **one endpoint** (`POST /graphql`), and the client sends a **query describing exactly the data it wants**:
+
+```graphql
+query {
+  me { name role }
+  tickets(status: open, first: 10) {
+    nodes { id title priority createdAt }
+    nextCursor
+  }
+}
+```
+
+The response has **exactly that shape**: no missing fields, no extra ones. The **schema** (the list of every type and field) is strict and self-describing, so asking for a field that doesn't exist (`{ me { passwordHash } }`) is rejected before anything runs.
+
+REST stays: it's simpler for many clients and fully documented in `/docs`. GraphQL is an alternative door into **the same rooms**.
+
+### Tools
+
+- **GraphQL Yoga** is the server, plugged into Express at `/graphql`. In development, opening it in a browser shows **GraphiQL**, an interactive explorer with autocomplete. It's not served in production.
+- **Pothos** defines the schema **in TypeScript**, so the compiler checks every resolver returns what its type promises, with no code generation.
+- `graphql` **17**. The "latest by date" on npm was a *15.x* patch (old lines still get fixes), but the official `latest` tag was 17.0.2. *Read the tags, not just the dates.*
+
+### One set of rules
+
+Every **resolver** (the function that fetches a field's data) calls the **existing services**: `getTicket`, `listTickets`, and so on. Organization isolation, role-based visibility and validation are **reused, not rewritten**, so GraphQL can't become a back door. The tests prove it: a resident sees only their own tickets, and another resident's ticket gives the same `TICKET_NOT_FOUND` as REST.
+
+**Login** is the same `Authorization: Bearer` token, checked by the same session lookup. Malformed IDs give `VALIDATION_ERROR`, never a database error.
+
+### Errors: same codes, unexpected ones hidden
+
+Resolvers throw the app's own `HttpError` (as in REST). Yoga's `maskError` turns it into a GraphQL error with the **same code** (`extensions.code`). **Anything unexpected is masked** as "Unexpected error.", the same principle as REST's error handler.
+
+### A bug worth understanding: two copies of a library ⭐
+
+At first, the *expected* errors were masked as "Unexpected error." too. Logging what `maskError` received showed something odd: the error **was** a `GraphQLError`, but `error instanceof GraphQLError` was **false**.
+
+**Why:** the `graphql` package ships **two builds**, ES modules (`index.mjs`) and CommonJS (`index.js`). Under the **test runner**, Vite loaded *my* files with the ES-module build, while Node loaded *Yoga's* with the CommonJS build. Two copies means **two different `GraphQLError` classes**, and `instanceof` fails across them. In production (plain Node) both resolve to the same build, which is why a quick plain-Node check said "same class" and my first guess was wrong.
+
+**The fix doesn't depend on which copy is loaded:** app code **never** constructs or `instanceof`-checks `GraphQLError`. It throws `HttpError`; `maskError` walks the error's wrapper chain to find it; and the error returned to clients is built with **Yoga's** `createGraphQLError`, which always matches Yoga's copy. This is known as the **dual package hazard**. *Lesson: when `instanceof` mysteriously fails for a class from a library, suspect two copies of that library.*
+
+### Next
+
+Nested data in one query (a ticket's comments, photos, history and people), with **DataLoader** to avoid the "N+1 queries" problem, then mutations.
+
 ---
 
 ## Glossary
@@ -2729,3 +2781,7 @@ POST /api/auth/reset-password   { token, newPassword }    → password set, ever
 | **EXIF metadata** | Hidden information inside photos (camera, time, often GPS location) |
 | **Thumbnail** | A small preview version of an image |
 | **Decompression bomb** | A small file that expands to a huge one when opened, meant to exhaust memory |
+| **GraphQL** | An API style with one endpoint where the client's query describes exactly the data it wants |
+| **Resolver** | The function that fetches the data for one GraphQL field |
+| **GraphiQL** | An interactive in-browser explorer for GraphQL APIs |
+| **Dual package hazard** | Two copies of the same library (e.g. ESM and CommonJS builds) loaded at once, so their classes don't match |
