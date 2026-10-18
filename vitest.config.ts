@@ -10,6 +10,8 @@ export default defineConfig({
       NODE_ENV: "test",
       DATABASE_URL: testDatabaseUrl("app"),
       CORS_ORIGINS: "http://localhost:5173",
+      // Redis database 1, so tests never touch the dev queue (database 0).
+      REDIS_URL: process.env.TEST_REDIS_URL ?? "redis://localhost:6379/1",
     },
     // Test files share one database, so run them one at a time.
     fileParallelism: false,

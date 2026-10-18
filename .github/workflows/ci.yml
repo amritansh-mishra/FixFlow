@@ -23,6 +23,15 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      # Redis for the notifications job queue (tests use database 1).
+      redis:
+        image: redis:8.8-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     # Same two connections as local development: the owner (for test setup and
     # migrations) and the restricted app role (what the app under test uses).

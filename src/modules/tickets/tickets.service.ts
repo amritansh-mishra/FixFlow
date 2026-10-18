@@ -13,6 +13,7 @@ import {
   type TicketStatus,
 } from "../../db/schema.js";
 import type { AuthContext } from "../../middleware/auth.js";
+import { enqueueNotification } from "../../jobs/queue.js";
 import { HttpError } from "../../middleware/errors.js";
 import { canAssign, canCreateTicket, findTransition, isAssignable, ticketScope } from "./tickets.policy.js";
 import type { CreateTicketBody, ListTicketsQuery } from "./tickets.schemas.js";
@@ -178,13 +179,13 @@ export async function assignTicket(auth: AuthContext, ticketId: string, technici
     throw new HttpError(409, "INVALID_TRANSITION", `Cannot assign a ticket that is ${ticket.status}`);
   }
 
-  return db.transaction(async (tx) => {
-    const [updated] = await tx
+  const updated = await db.transaction(async (tx) => {
+    const [row] = await tx
       .update(tickets)
       .set({ assignedTo: technicianId, status: "assigned" })
       .where(unchangedSince(ticket))
       .returning();
-    if (!updated) throw CONFLICT();
+    if (!row) throw CONFLICT();
 
     await tx.insert(ticketEvents).values({
       organizationId: auth.organizationId,
@@ -195,8 +196,19 @@ export async function assignTicket(auth: AuthContext, ticketId: string, technici
       toStatus: "assigned",
       assignedTo: technicianId,
     });
-    return updated;
+    return row;
   });
+
+  // Queued only after the transaction has committed, so the worker never
+  // looks for a change that isn't saved yet.
+  await enqueueNotification({
+    kind: "ticket_assigned",
+    organizationId: auth.organizationId,
+    ticketId: ticket.id,
+    actorId: auth.userId,
+    technicianId,
+  });
+  return updated;
 }
 
 export async function changeTicketStatus(auth: AuthContext, ticketId: string, to: TicketStatus) {
@@ -210,13 +222,13 @@ export async function changeTicketStatus(auth: AuthContext, ticketId: string, to
     throw new HttpError(403, "FORBIDDEN", "You are not allowed to make this change");
   }
 
-  return db.transaction(async (tx) => {
-    const [updated] = await tx
+  const updated = await db.transaction(async (tx) => {
+    const [row] = await tx
       .update(tickets)
       .set({ status: to })
       .where(unchangedSince(ticket))
       .returning();
-    if (!updated) throw CONFLICT();
+    if (!row) throw CONFLICT();
 
     await tx.insert(ticketEvents).values({
       organizationId: auth.organizationId,
@@ -226,8 +238,18 @@ export async function changeTicketStatus(auth: AuthContext, ticketId: string, to
       fromStatus: ticket.status,
       toStatus: to,
     });
-    return updated;
+    return row;
   });
+
+  await enqueueNotification({
+    kind: "status_changed",
+    organizationId: auth.organizationId,
+    ticketId: ticket.id,
+    actorId: auth.userId,
+    fromStatus: ticket.status,
+    toStatus: to,
+  });
+  return updated;
 }
 
 export async function getTicketHistory(auth: AuthContext, ticketId: string) {
@@ -273,6 +295,13 @@ export async function addComment(auth: AuthContext, ticketId: string, body: stri
       type: "commented",
     });
     return comment!.id;
+  });
+  await enqueueNotification({
+    kind: "comment_added",
+    organizationId: auth.organizationId,
+    ticketId,
+    actorId: auth.userId,
+    commentId: id,
   });
   const [comment] = await db
     .select(commentFields)

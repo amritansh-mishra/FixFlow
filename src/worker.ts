@@ -8,14 +8,17 @@
 // never makes an API request wait, and a crash here can't take the API down.
 
 import { Worker, type Job } from "bullmq";
+import { pool } from "./db/index.js";
+import { processNotificationJob } from "./jobs/notifications.js";
 import { NOTIFICATIONS_QUEUE, redisConnection, type NotificationJob } from "./jobs/queue.js";
 
 async function handle(job: Job<NotificationJob>) {
-  switch (job.data.kind) {
-    case "test":
-      console.log(`[worker] test job ${job.id}: ${job.data.message}`);
-      return;
+  if (job.data.kind === "test") {
+    console.log(`[worker] test job ${job.id}: ${job.data.message}`);
+    return;
   }
+  const created = await processNotificationJob(job.data, job.id!);
+  console.log(`[worker] ${job.data.kind} for ticket ${job.data.ticketId}: ${created} notification(s)`);
 }
 
 const worker = new Worker<NotificationJob>(NOTIFICATIONS_QUEUE, handle, {
@@ -34,6 +37,7 @@ worker.on("failed", (job, err) =>
 async function shutdown(signal: string) {
   console.log(`[worker] ${signal} received, finishing current jobs`);
   await worker.close();
+  await pool.end();
   process.exit(0);
 }
 process.on("SIGINT", () => void shutdown("SIGINT"));

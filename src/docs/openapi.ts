@@ -7,6 +7,7 @@
 import { z } from "zod";
 import { TICKET_EVENT_TYPES, TICKET_PRIORITIES, TICKET_STATUSES, USER_ROLES } from "../db/schema.js";
 import { joinBody, loginBody, signupBody } from "../modules/auth/auth.schemas.js";
+import { listNotificationsQuery, markReadBody } from "../modules/notifications/notifications.routes.js";
 import { addPropertyBody } from "../modules/properties/properties.routes.js";
 import { addUserBody } from "../modules/users/users.routes.js";
 import {
@@ -82,6 +83,7 @@ export const openApiDocument = {
     { name: "Auth", description: "Log in and out" },
     { name: "Tickets", description: "Report, assign and track maintenance tickets" },
     { name: "Organization", description: "Properties and statistics" },
+    { name: "Notifications", description: "Your in-app notifications" },
     { name: "System", description: "Service status" },
   ],
   components: {
@@ -317,6 +319,53 @@ export const openApiDocument = {
           },
           ...commonErrors,
           "403": errorResponse("Not a manager or admin"),
+        },
+      },
+    },
+    "/api/notifications": {
+      get: {
+        tags: ["Notifications"],
+        operationId: "listNotifications",
+        summary: "Your notifications, newest first, with the unread count",
+        parameters: queryParameters(listNotificationsQuery),
+        responses: {
+          "200": {
+            description: "OK",
+            content: json({
+              type: "object",
+              properties: {
+                data: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      id: uuid,
+                      type: { type: "string", enum: ["ticket_assigned", "status_changed", "comment_added"] },
+                      message: { type: "string" },
+                      ticketId: uuid,
+                      actorId: uuid,
+                      readAt: nullable(timestamp),
+                      createdAt: timestamp,
+                    },
+                  },
+                },
+                unreadCount: { type: "integer" },
+              },
+            }),
+          },
+          ...commonErrors,
+        },
+      },
+    },
+    "/api/notifications/read": {
+      post: {
+        tags: ["Notifications"],
+        operationId: "markNotificationsRead",
+        summary: "Mark notifications as read: some (ids) or all (empty body)",
+        requestBody: { required: false, content: json(fromZod(markReadBody)) },
+        responses: {
+          "200": { description: "How many were marked", content: dataOf({ type: "object", properties: { updated: { type: "integer" } } }) },
+          ...commonErrors,
         },
       },
     },

@@ -17,6 +17,7 @@ A resident reports a leaking tap, a manager assigns a technician, the technician
 - **Role-based access:** residents, technicians, managers and admins each see and do only what their role allows. Hidden tickets return `404`.
 - **Workflow as a state machine:** `open → assigned → in_progress → resolved → closed` (with reopen), with the rules in one policy module.
 - **Audit history:** an append-only event log for every ticket, written in the same transaction as each change.
+- **Background jobs:** assignments, status changes and comments queue notification jobs (BullMQ on Redis); a separate worker process turns them into in-app notifications, idempotently, with retries.
 - **Concurrency-safe updates:** optimistic concurrency returns `409 CONFLICT` instead of losing a simultaneous change.
 - **Least-privilege database role:** the app's database user can't alter tables or rewrite history.
 - **Comments, search and pagination:** ticket discussions, text search with filters, and cursor pagination that stays exact down to the microsecond.
@@ -24,7 +25,7 @@ A resident reports a leaking tap, a manager assigns a technician, the technician
 - **Interactive API docs:** OpenAPI 3.1 generated from the same Zod schemas used for validation, with Swagger UI at `/docs`.
 - **196 automated tests** (Vitest + Supertest) against a real PostgreSQL database, including a deterministic race-condition test. They run in **GitHub Actions CI** on every push.
 
-**Tech stack:** TypeScript, Node.js 24, Express 5, PostgreSQL, Drizzle ORM, Zod, Vitest, OpenAPI/Swagger, GitHub Actions · React 19 + Vite frontend · deployed on Render.
+**Tech stack:** TypeScript, Node.js 24, Express 5, PostgreSQL, Redis + BullMQ, Drizzle ORM, Zod, Vitest, Docker Compose, OpenAPI/Swagger, GitHub Actions · React 19 + Vite frontend · deployed on Render.
 
 **Frontend** (`frontend/`): sign up or join with a code, log in, browse and search tickets, report problems, assign technicians, move tickets through the workflow with role-aware buttons, comment, see each ticket's history, a manager dashboard, and a Team page (people, join code, properties).
 
@@ -71,11 +72,12 @@ curl $API/api/tickets -H "Authorization: Bearer <token>"
 Requires Node 24 (`nvm use`) and Docker. No local PostgreSQL install is needed.
 
 ```bash
-docker compose up -d      # PostgreSQL 18 on localhost:5433 (data kept in a Docker volume)
+docker compose up -d      # PostgreSQL 18 on localhost:5433 and Redis on localhost:6379
 cp .env.example .env      # defaults already point at the Docker database
 npm install
 npm run db:migrate        # create the tables (add -- --status to preview)
 npm run dev               # start the API with auto-reload on http://localhost:3000
+npm run worker            # in a second terminal: the background worker (notifications)
 npm test                  # run the tests (in a separate fixflow_test database)
 ```
 
@@ -130,6 +132,8 @@ npm run user:set-password -- --org <organization-slug> --email <email>
 | `POST` | `/api/auth/logout` | End the current session → 204 |
 | `GET` | `/api/auth/me` | The logged-in user |
 | `GET` | `/api/properties` | The organization's properties (needed to create tickets) |
+| `GET` | `/api/notifications?limit=` | Your notifications, newest first, with `unreadCount` |
+| `POST` | `/api/notifications/read` | Mark read: `{ ids: [...] }` or `{}` for all |
 | `GET` | `/api/organization` | Your organization (join code for managers and admins) |
 | `POST` | `/api/organization/join-code` | Replace the join code (managers and admins) |
 | `GET` | `/api/users` | Everyone in the organization (managers and admins) |

@@ -4,6 +4,7 @@ import pg from "pg";
 import { pool } from "../src/db/index.js";
 import * as schema from "../src/db/schema.js";
 import { organizations, properties, tickets, users, type NewTicket, type UserRole } from "../src/db/schema.js";
+import { closeQueue, notificationsQueue } from "../src/jobs/queue.js";
 import { createSession } from "../src/modules/auth/auth.service.js";
 import { TEST_DB_NAME, testDatabaseUrl } from "./test-db.js";
 
@@ -17,6 +18,7 @@ export const adminDb = drizzle(adminPool, { schema });
 export async function closeDatabases() {
   await pool.end();
   await adminPool.end();
+  await closeQueue();
 }
 
 // Empty every table between tests so each test starts clean.
@@ -26,6 +28,8 @@ export async function resetDatabase() {
   if (rows[0]?.name !== TEST_DB_NAME) {
     throw new Error(`Refusing to reset database "${rows[0]?.name}"`);
   }
+  // Empty the (test) job queue too, so each test sees only its own jobs.
+  await notificationsQueue().obliterate({ force: true });
   await adminDb.execute(sql`TRUNCATE notifications, sessions, ticket_comments, ticket_events, tickets, properties, users, organizations CASCADE`);
 }
 

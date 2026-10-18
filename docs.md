@@ -35,7 +35,8 @@ My notes on the backend engineering concepts I learned while building FixFlow, i
 29. [The React frontend](#29-the-react-frontend)
 30. [Signup, join codes and the Team page](#30-signup-join-codes-and-the-team-page)
 31. [Docker Compose for local development](#31-docker-compose-for-local-development)
-32. [Glossary](#glossary)
+32. [Redis, BullMQ and in-app notifications](#32-redis-bullmq-and-in-app-notifications)
+33. [Glossary](#glossary)
 
 ---
 
@@ -2171,6 +2172,84 @@ For those commands, **both** `DATABASE_URL` and `DATABASE_ADMIN_URL` were set to
 
 ---
 
+## 32. Redis, BullMQ and in-app notifications
+
+Built in four small steps: Redis in Docker → the queue and a worker → the `notifications` table → wiring it all together.
+
+### The idea: background jobs
+
+When a manager assigns a ticket, the technician should be told. But the API shouldn't **wait** while that happens, especially once email arrives, which can take seconds or fail. So the work is split:
+
+```
+Manager → API ──saves the change──▶ PostgreSQL
+              └─adds a job────────▶ Redis queue ──▶ Worker ──writes──▶ notifications table
+              (answers in ~0.3 s)                   (a separate program, moments later)
+```
+
+**Analogy:** a restaurant. The **waiter** (API) clips the order to the **rail** (queue) and goes back to customers. The **cook** (worker) takes orders off the rail one by one.
+
+### The pieces
+
+| Piece | What it is | Where |
+|---|---|---|
+| **Redis** | A very fast in-memory store, like a whiteboard by the door (PostgreSQL is the organized library) | `docker-compose.yml` |
+| **BullMQ** | A Node.js library that keeps job queues **in Redis** and handles retries | `src/jobs/queue.ts` |
+| **Worker** | A **separate program** that runs jobs: `npm run worker` | `src/worker.ts` |
+| **Job processor** | Decides who to notify, writes the message, saves rows | `src/jobs/notifications.ts` |
+
+**Why a separate program?** Slow work never blocks a user, and if the worker crashes, the API keeps running. Jobs just wait in Redis until the worker is back. This was shown live: a job added while the worker was **off** ran as soon as it started.
+
+**Redis persistence:** Redis normally lives in memory, which is lost on restart. `--appendonly yes` also writes every change to disk, so queued jobs survive a restart.
+
+### Who gets notified
+
+| Event | Notified |
+|---|---|
+| Ticket **assigned** | The technician |
+| **Status changed** | The reporter and the assigned technician |
+| **Comment** added | The reporter and the assigned technician |
+
+…and **never the person who did it**. Nobody needs a notification about their own action. A comment by a manager notifies both the resident and the technician; a status change by the technician notifies only the resident.
+
+**Jobs carry IDs, not text.** A job says "ticket X, actor Y", and the worker looks up the names and titles **when it runs**, so it always uses current data and jobs stay small.
+
+### Four important details
+
+**1. Queue the job after the transaction commits.**
+```ts
+const updated = await db.transaction(async (tx) => { ... });   // 1. save the change
+await enqueueNotification({ kind: "ticket_assigned", ... });    // 2. only then queue the job
+```
+If the job were queued *inside* the transaction, a fast worker could run it **before** the change is saved, and find nothing.
+
+**2. Idempotency: retries must not duplicate.** BullMQ **retries** failed jobs (3 attempts, waiting 1s, 2s, 4s; that's *exponential backoff*). Picture this: the worker saves the notification, then crashes before telling BullMQ it finished. BullMQ runs the job again. Each row therefore has a **unique `dedupe_key`** (job ID + recipient), and the insert uses `ON CONFLICT DO NOTHING`, so the second attempt saves nothing new. **Doing it twice gives the same result as doing it once:** that's *idempotency*. Tested by processing the same job twice: 2 rows, then 0.
+
+**3. Notifications are "best effort".** If Redis is down, should assigning a ticket fail? No: the ticket change is what matters. `enqueueNotification` catches the error and logs it, and the request still succeeds. `enableOfflineQueue: false` makes BullMQ **fail fast** when Redis is down instead of making the request hang. *(A stricter approach for later is the **outbox pattern**: save "jobs to send" in PostgreSQL in the same transaction, and have a process move them to the queue. Then nothing is lost even if Redis is down.)*
+
+**4. Permissions stay tight.** The app's database user can create notifications and update **only `read_at`** (mark as read). It can't edit messages, redirect a notification to someone else, or delete one.
+
+### The endpoints
+
+```
+GET  /api/notifications           → { data: [...newest first], unreadCount: 3 }
+POST /api/notifications/read      { "ids": ["..."] }  or  {}  (mark all)
+```
+
+Both only ever touch **your own** notifications, in **your** organization. Marking already-read ones again keeps their original read time.
+
+### Testing
+
+- **Tests use Redis database 1**, and your development worker uses database 0. Redis has numbered databases, a bit like separate drawers, so test jobs never mix with real ones. The test queue is emptied before every test (`obliterate`), like the tables are.
+- The tests **run the job processor directly** instead of starting a worker process, which makes them fast and predictable. A separate **live check** ran the API and the worker as two real programs on the Docker database: the API answered in 0.28s, the worker logged `ticket_assigned … 1 notification(s)`, and the technician's inbox showed it.
+- **CI** now starts a Redis service alongside PostgreSQL.
+- **Breaking it on purpose:** notifying people about their own actions, removing the duplicate protection, and letting mark-as-read touch other people's notifications were each caught.
+
+### Next
+
+The frontend bell 🔔, then email (Mailpit locally) as a second kind of job on the same queue.
+
+---
+
 ## Glossary
 
 | Term | Simple meaning |
@@ -2294,3 +2373,12 @@ For those commands, **both** `DATABASE_URL` and `DATABASE_ADMIN_URL` were set to
 | **Healthcheck** | A command Docker runs regularly to check a service is actually ready |
 | **Port binding** | Connecting a port on your computer to a port inside a container, e.g. `127.0.0.1:5433:5432` |
 | **127.0.0.1 vs 0.0.0.0** | Reachable from this computer only vs from every network the computer is on |
+| **Redis** | A very fast in-memory data store, often used for queues and caching |
+| **Background job** | Work done after the request has been answered, by a separate process |
+| **Queue** | An ordered list of jobs waiting to be processed |
+| **BullMQ** | A Node.js library for job queues stored in Redis |
+| **Worker** | A process that takes jobs off a queue and runs them |
+| **Exponential backoff** | Retrying with growing waits (1s, 2s, 4s…) so a struggling service isn't hammered |
+| **Idempotency** | Doing something twice has the same effect as doing it once |
+| **Best effort** | Try to do it, but don't fail the main action if it can't be done |
+| **Outbox pattern** | Saving outgoing messages in the database in the same transaction, then delivering them separately, so none are lost |
