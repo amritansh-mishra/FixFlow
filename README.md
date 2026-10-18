@@ -6,6 +6,24 @@ A multi-tenant REST API for maintenance and work-order management. FixFlow repla
 
 A resident reports a leaking tap, a manager assigns a technician, the technician updates progress, and the resident confirms the fix. Every step is recorded.
 
+## Why we built it
+
+**The problem.** In most hostels, apartment societies and campuses, repairs are reported on WhatsApp groups, phone calls or a notebook at the front desk. Messages get buried, nobody knows who's handling what, residents keep asking "any update?", and there's no record to show how long repairs actually take.
+
+**The solution.** FixFlow gives every problem a **ticket** with a clear owner and status. Each person sees only what concerns them, gets notified when something changes, and every step is saved in a history that can't be edited.
+
+**The second goal: learning.** FixFlow was also built to learn backend engineering properly, by doing what real production systems do rather than a basic to-do app: data separation between organizations, security, background jobs, file storage, two kinds of API, automated tests and CI. Every decision is explained in plain language in [`docs.md`](docs.md).
+
+## Who it's for
+
+| Who | What they get |
+|---|---|
+| **Residents, students, tenants** | Report a problem with photos in a minute, follow its progress, confirm when it's fixed |
+| **Technicians** | A clear list of jobs assigned to them; no more chasing messages |
+| **Managers, wardens, facility staff** | See every ticket, assign work, spot delays, check each technician's workload on a dashboard |
+| **Organizations** | Hostels, apartment complexes, offices, college campuses. Many organizations share one installation, each fully separated from the others |
+| **Developers and reviewers** | A readable, tested example of a multi-tenant backend, with the reasoning behind each choice |
+
 **Live app:** `https://<frontend>.onrender.com` · **API:** `https://<api>.onrender.com` · **Interactive API docs:** `https://<api>.onrender.com/docs`
 (free tier: the first request after a while can take ~1 minute while the server wakes up)
 
@@ -25,11 +43,65 @@ A resident reports a leaking tap, a manager assigns a technician, the technician
 - **Comments, search and pagination:** ticket discussions, text search with filters, and cursor pagination that stays exact down to the microsecond.
 - **Manager dashboard data:** tickets by status and priority, average resolution time, and technician workload, computed with SQL aggregates.
 - **Interactive API docs:** OpenAPI 3.1 generated from the same Zod schemas used for validation, with Swagger UI at `/docs`.
-- **196 automated tests** (Vitest + Supertest) against a real PostgreSQL database, including a deterministic race-condition test. They run in **GitHub Actions CI** on every push.
+- **369 automated tests** (Vitest + Supertest) against a real PostgreSQL database, including a deterministic race-condition test. They run in **GitHub Actions CI** on every push.
 
 **Tech stack:** TypeScript, Node.js 24, Express 5, GraphQL (Yoga + Pothos), PostgreSQL, Redis + BullMQ, S3 API (Cloudflare R2), Drizzle ORM, Zod, Vitest, Docker Compose, OpenAPI/Swagger, GitHub Actions · React 19 + Vite frontend · deployed on Render.
 
 **Frontend** (`frontend/`): sign up or join with a code, log in, browse and search tickets, report problems, assign technicians, move tickets through the workflow with role-aware buttons, comment, see each ticket's history, a manager dashboard, and a Team page (people, join code, properties).
+
+## Why these technologies (and not the alternatives)
+
+Each tool was picked for a reason. Here's the reason, and what we chose it over.
+
+| Need | We used | Instead of | Why |
+|---|---|---|---|
+| Language | **TypeScript** | Plain JavaScript | The compiler catches mistakes (a wrong field name, a missing case) before the code runs. Database, validation and GraphQL types all connect, so a change in one place is checked everywhere |
+| Server | **Node.js + Express 5** | NestJS, Fastify, Django, Spring Boot | Express is the most widely used Node framework and stays out of the way, so every piece (auth, errors, validation) is visible and written on purpose. NestJS adds a lot of structure that hides how things work; Fastify is faster, but speed isn't the bottleneck here |
+| Database | **PostgreSQL** | MongoDB, MySQL | Tickets, users, properties and organizations are connected data, which suits a relational database. PostgreSQL lets the **database itself** enforce rules: composite foreign keys stop one organization's ticket pointing at another's user, transactions keep history in sync, and per-column permissions limit what the app can change. MongoDB would leave all of that to app code |
+| Database access | **Drizzle ORM** | Prisma, TypeORM, raw SQL strings | Drizzle reads like SQL, so you still learn SQL. It's thin (no separate query engine) and writes plain, reviewable SQL migration files. Raw strings risk SQL injection; Prisma and TypeORM have their own language that hides the SQL |
+| Validation | **Zod** | Joi, class-validator | One schema does three jobs: checks incoming data, gives TypeScript types, and generates the API documentation. The REST and GraphQL APIs share the same schemas |
+| Login | **Server-side sessions** | JWT | A session is a row in the database, so logging out or changing a password takes effect **instantly** on every device. A JWT stays valid until it expires unless you build extra machinery |
+| Password hashing | **scrypt** | bcrypt, Argon2 | Built into Node (no extra native package to install or patch) and designed to be slow and memory-hungry for attackers. Argon2 is equally good but needs an extra dependency |
+| Background jobs | **Redis + BullMQ** | Sending emails inside the request, RabbitMQ, Kafka | Emails can be slow or fail; a queue lets the request finish instantly while a separate **worker** retries failed jobs. RabbitMQ and Kafka are powerful but far more than a notification queue needs; Redis is simple and widely used |
+| File storage | **Cloudflare R2** (S3 API) | Amazon S3, storing files in the database | R2 has **no fee for downloads**, and photos are viewed far more often than uploaded. It speaks the same S3 API, so moving to Amazon S3 is a settings change. Files in the database would bloat it and slow backups |
+| Local file storage | **SeaweedFS** | MinIO | MinIO was the usual choice, but its repository was archived (no longer maintained) when checked in 2026 |
+| Image processing | **sharp** | Jimp, ImageMagick | Very fast (built on libvips). Re-encoding every photo removes hidden GPS location data and creates small thumbnails |
+| Second API | **GraphQL** (Yoga + Pothos) | Apollo Server, schema-first GraphQL | Pothos defines the schema **in TypeScript**, so the compiler checks every resolver. Yoga is lightweight and follows the spec closely. Apollo Server is heavier and more tied to Apollo's commercial tools |
+| Tests | **Vitest + Supertest** | Jest, Mocha | Vitest runs TypeScript and modern modules without extra setup and is fast. Supertest sends real HTTP requests to the app, and the tests run against a **real PostgreSQL**, not mocks |
+| Local services | **Docker Compose** | Installing each service by hand | One command starts PostgreSQL, Redis, a test mail inbox (Mailpit) and file storage, the same way on every machine |
+| CI | **GitHub Actions** | Jenkins, CircleCI | Built into GitHub and free for public repositories; every push runs the full test suite |
+| Frontend | **React 19 + Vite** | Next.js, Angular | The app sits behind a login, so it doesn't need search-engine-friendly server rendering (Next.js's main strength). Vite builds plain static files that can be hosted anywhere for free. React is the library most reviewers know |
+| Hosting | **Render** | AWS, Heroku, Vercel | Free tier, and a single `render.yaml` file describes the whole setup (infrastructure as code). It runs a normal long-lived Node server; Vercel is built for short-lived serverless functions, a poor fit for a queue worker. AWS is far more setup for a project this size |
+
+## Limitations
+
+Being honest about what FixFlow doesn't do (yet):
+
+- **Not deployed yet.** `render.yaml` currently creates the API, the frontend and the database. The background worker, Redis, a real email provider and Cloudflare R2 still have to be added for notifications, emails and photos to work online.
+- **Free hosting sleeps.** On Render's free tier, the first request after a quiet period can take about a minute.
+- **No live updates.** Notifications appear when the page checks for them, not instantly (no WebSockets).
+- **Login rate limits live in memory.** That's fine for one server; with several servers, each would keep its own count. They'd need to move into Redis.
+- **Photos only.** Attachments are JPEG, PNG or WebP images up to 5 MB; no videos or PDFs.
+- **Basic accounts.** No two-factor authentication and no "Sign in with Google".
+- **No deadlines or recurring jobs.** Tickets don't have due dates, automatic escalation, or scheduled maintenance (e.g. "service the water pump monthly").
+- **English only**, and no mobile app (the website works on phones).
+- **The frontend uses REST only.** GraphQL is available for other clients.
+- **Browser screens aren't tested automatically.** The 369 tests cover the API; the UI is tested by hand.
+
+## Future scope
+
+Ideas for what comes next, roughly in order of usefulness:
+
+1. **Finish the deployment:** worker, Redis, email and R2 on Render.
+2. **Live updates** with WebSockets or Server-Sent Events, so new tickets and status changes appear instantly.
+3. **Deadlines and escalation:** a due date per priority, with a reminder or escalation to the manager when it's missed.
+4. **Recurring maintenance:** scheduled tickets for routine checks.
+5. **Mobile-friendly app** (an installable web app) with push notifications and taking photos from the camera.
+6. **Reports:** export tickets to CSV, monthly summaries, ratings from residents after a fix.
+7. **Stronger accounts:** two-factor authentication and single sign-on for colleges and companies.
+8. **Scaling:** rate limits in Redis, structured logs, metrics and error tracking (e.g. Sentry).
+9. **End-to-end browser tests** with Playwright.
+10. **More languages,** starting with Hindi.
 
 ## Try the demo
 
@@ -127,7 +199,9 @@ Within an organization, users see tickets according to their role. Tickets outsi
 |---|---|
 | resident | tickets they created |
 | technician | tickets assigned to them |
-| manager, admin | every ticket in the organization | Passwords are set from the terminal (the prompt is hidden; it logs the user out everywhere):
+| manager, admin | every ticket in the organization |
+
+Passwords can also be set from the terminal (the prompt is hidden; it logs the user out everywhere):
 
 ```bash
 npm run user:set-password -- --org <organization-slug> --email <email>
