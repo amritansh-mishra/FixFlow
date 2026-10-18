@@ -29,5 +29,23 @@ services:
       timeout: 5s
       retries: 10
 
+  # Redis: a fast in-memory store. BullMQ keeps its job queues here.
+  redis:
+    image: redis:8.8-alpine
+    # --appendonly yes: also write every change to disk, so queued jobs
+    # survive a restart instead of vanishing with the memory.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      # This computer only, like PostgreSQL.
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   pgdata:
+  redisdata:
